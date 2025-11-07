@@ -1,0 +1,132 @@
+{
+  "info": {
+    "name": "Workflow Backend API",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+    "description": "Postman collection for local backend at http://localhost:5000"
+  },
+  "item": [
+    {
+      "name": "Health",
+      "item": [
+        {
+          "name": "GET /api/health",
+          "request": {"method": "GET", "url": "{{base_url}}/api/health"},
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Auth",
+      "item": [
+        {
+          "name": "POST /api/auth/register",
+          "request": {
+            "method": "POST",
+            "header": [{"key": "Content-Type", "value": "application/json"}],
+            "body": {"mode": "raw", "raw": "{\n  \"email\": \"{{email}}\",\n  \"password\": \"{{password}}\",\n  \"name\": \"Demo User\",\n  \"tenant_name\": \"DemoTenant\"\n}"},
+            "url": "{{base_url}}/api/auth/register"
+          },
+          "event": [{
+            "listen": "test",
+            "script": {"exec": [
+              "if (pm.response.code === 200) {",
+              "  var json = pm.response.json();",
+              "  pm.environment.set('token', json.token);",
+              "  pm.environment.set('user_id', json.user.id);",
+              "}"
+            ]}
+          }]
+        },
+        {
+          "name": "POST /api/auth/login",
+          "request": {
+            "method": "POST",
+            "header": [{"key": "Content-Type", "value": "application/json"}],
+            "body": {"mode": "raw", "raw": "{\n  \"email\": \"{{email}}\",\n  \"password\": \"{{password}}\"\n}"},
+            "url": "{{base_url}}/api/auth/login"
+          },
+          "event": [{"listen": "test", "script": {"exec": [
+            "if (pm.response.code === 200) {",
+            "  var json = pm.response.json();",
+            "  pm.environment.set('token', json.token);",
+            "  pm.environment.set('user_id', json.user.id);",
+            "}"
+          ]}}]
+        }
+      ]
+    },
+    {
+      "name": "Users",
+      "item": [
+        {"name": "GET /api/users", "request": {"method": "GET", "url": "{{base_url}}/api/users"}},
+        {"name": "GET /api/users/:id", "request": {"method": "GET", "url": "{{base_url}}/api/users/{{user_id}}"}},
+        {"name": "POST /api/users", "request": {"method": "POST", "header": [{"key": "Content-Type", "value": "application/json"}], "body": {"mode": "raw", "raw": "{\n  \"email\": \"new@example.com\",\n  \"password\": \"changeme\",\n  \"name\": \"New User\",\n  \"tenant_name\": \"Acme\"\n}"}, "url": "{{base_url}}/api/users"}},
+        {"name": "PUT /api/users/:id", "request": {"method": "PUT", "header": [{"key": "Content-Type", "value": "application/json"}], "body": {"mode": "raw", "raw": "{\n  \"name\": \"Updated Name\"\n}"}, "url": "{{base_url}}/api/users/{{user_id}}"}},
+        {"name": "DELETE /api/users/:id", "request": {"method": "DELETE", "url": "{{base_url}}/api/users/{{user_id}}"}}
+      ]
+    },
+    {
+      "name": "Templates",
+      "item": [
+        {"name": "GET /api/templates", "request": {"method": "GET", "url": "{{base_url}}/api/templates"}},
+        {"name": "GET /api/templates/:id (tpl_welcome)", "request": {"method": "GET", "url": "{{base_url}}/api/templates/tpl_welcome"}},
+        {"name": "POST /api/templates", "request": {"method": "POST", "header": [{"key": "Content-Type", "value": "application/json"}], "body": {"mode": "raw", "raw": "{\n  \"name\": \"New Template\",\n  \"description\": \"Example\"\n}"}, "url": "{{base_url}}/api/templates"}}
+      ]
+    },
+    {
+      "name": "Flows",
+      "item": [
+        {"name": "GET /api/flows", "request": {"method": "GET", "url": "{{base_url}}/api/flows"}},
+        {"name": "GET /api/flows/:id (flow_cust_onboarding)", "request": {"method": "GET", "url": "{{base_url}}/api/flows/flow_cust_onboarding"}},
+        {"name": "POST /api/flows", "request": {"method": "POST", "header": [{"key": "Content-Type", "value": "application/json"}], "body": {"mode": "raw", "raw": "{\n  \"name\": \"My New Flow\"\n}"}, "url": "{{base_url}}/api/flows"}},
+        {"name": "PUT /api/flows/:id (update)", "request": {"method": "PUT", "header": [{"key": "Content-Type", "value": "application/json"}], "body": {"mode": "raw", "raw": "{\n  \"name\": \"Renamed Flow\",\n  \"status\": \"draft\"\n}"}, "url": "{{base_url}}/api/flows/flow_invoice_processing"}},
+        {"name": "DELETE /api/flows/:id", "request": {"method": "DELETE", "url": "{{base_url}}/api/flows/flow_lead_qualification"}},
+        {"name": "POST /api/flows/:id/deploy", "request": {"method": "POST", "url": "{{base_url}}/api/flows/flow_invoice_processing/deploy"}}
+      ]
+    },
+    {
+      "name": "Executions",
+      "item": [
+        {"name": "GET /api/executions", "request": {"method": "GET", "url": "{{base_url}}/api/executions"}},
+        {"name": "GET /api/flows/:id/executions", "request": {"method": "GET", "url": "{{base_url}}/api/flows/flow_cust_onboarding/executions"}}
+      ]
+    },
+    {
+      "name": "Secrets",
+      "item": [
+        {"name": "GET /api/secrets", "request": {"method": "GET", "url": "{{base_url}}/api/secrets"}},
+        {"name": "POST /api/secrets", "request": {"method": "POST", "header": [{"key": "Content-Type", "value": "application/json"}], "body": {"mode": "raw", "raw": "{\n  \"name\": \"API_KEY\",\n  \"value\": \"123456\"\n}"}, "url": "{{base_url}}/api/secrets"}},
+        {"name": "DELETE /api/secrets/:name", "request": {"method": "DELETE", "url": "{{base_url}}/api/secrets/API_KEY"}}
+      ]
+    },
+    {
+      "name": "Analytics",
+      "item": [
+        {"name": "GET /api/analytics/overview", "request": {"method": "GET", "url": "{{base_url}}/api/analytics/overview"}}
+      ]
+    },
+    {
+      "name": "Integrations",
+      "item": [
+        {"name": "GET /api/integrations/connections", "request": {"method": "GET", "url": "{{base_url}}/api/integrations/connections"}},
+        {"name": "GET /api/integrations/connections/:provider (Gmail)", "request": {"method": "GET", "url": "{{base_url}}/api/integrations/connections/gmail"}},
+        {"name": "POST /api/integrations/connect", "request": {"method": "POST", "header": [{"key": "Content-Type", "value": "application/json"}], "body": {"mode": "raw", "raw": "{\n  \"provider\": \"Gmail\",\n  \"category\": \"email\"\n}"}, "url": "{{base_url}}/api/integrations/connect"}},
+        {"name": "DELETE /api/integrations/connections/:connectionId", "request": {"method": "DELETE", "url": "{{base_url}}/api/integrations/connections/{{connection_id}}"}},
+        {"name": "GET /api/integrations/providers/:category (email)", "request": {"method": "GET", "url": "{{base_url}}/api/integrations/providers/email"}}
+      ]
+    },
+    {
+      "name": "OAuth2",
+      "item": [
+        {"name": "GET /api/oauth2/authorize (Mock)", "request": {"method": "GET", "url": {"raw": "{{base_url}}/api/oauth2/authorize?redirect_uri=http://localhost:3002/callback&state=demo", "host": ["{{base_url}}"], "path": ["api","oauth2","authorize"], "query": [{"key": "redirect_uri", "value": "http://localhost:3002/callback"},{"key": "state", "value": "demo"}]}}, "response": []},
+        {"name": "POST /api/oauth2/token", "request": {"method": "POST", "header": [{"key": "Content-Type", "value": "application/json"}], "body": {"mode": "raw", "raw": "{}"}, "url": "{{base_url}}/api/oauth2/token"}}
+      ]
+    },
+    {
+      "name": "Audit",
+      "item": [
+        {"name": "GET /api/audit", "request": {"method": "GET", "url": "{{base_url}}/api/audit"}}
+      ]
+    }
+  ]
+}
