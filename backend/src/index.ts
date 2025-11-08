@@ -60,7 +60,8 @@ const openapi: any = {
     '/api/integrations/providers/{category}': { get: { summary: 'Providers by category', parameters: [{ name: 'category', in: 'path' }], responses: { '200': { description: 'ok' } } } },
     '/api/oauth2/authorize': { get: { summary: 'OAuth2 authorize (mock)', responses: { '302': { description: 'redirect' } } } },
     '/api/oauth2/token': { post: { summary: 'OAuth2 token (mock)', responses: { '200': { description: 'ok' } } } },
-    '/api/audit': { get: { summary: 'Audit log', responses: { '200': { description: 'ok' } } } }
+    '/api/audit': { get: { summary: 'Audit log', responses: { '200': { description: 'ok' } } } },
+    '/api/integrations/unified': { post: { summary: 'Unified integration action (Nango/Panora)', responses: { '200': { description: 'ok' } } } }
   }
 }
 
@@ -550,6 +551,19 @@ app.get('/api/analytics/overview', async (_req, res) => {
 })
 
 // Integrations & OAuth2
+// Unified integration action endpoint: routes actions to Nango or Panora based on request body
+import { unifiedAction } from './integrations/unified.js'
+app.post('/api/integrations/unified', requireAuth, async (req, res) => {
+  try {
+    const result = await unifiedAction(req.body)
+    res.json(result)
+  } catch (e: any) {
+    const status = e?.status || 500
+    const message = e?.message || 'integration error'
+    res.status(status).json({ error: message })
+  }
+})
+
 app.get('/api/integrations/connections', async (_req, res) => {
   if (USE_SUPABASE) {
     const supabase = getSupabase()!
