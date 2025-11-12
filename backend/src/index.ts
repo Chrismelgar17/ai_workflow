@@ -553,15 +553,30 @@ app.get('/api/analytics/overview', async (_req, res) => {
 // Integrations & OAuth2
 // Unified integration action endpoint: routes actions to Nango or Panora based on request body
 import { unifiedAction } from './integrations/unified.js'
+import { NangoClient } from './integrations/nangoClient.js'
 import fs from 'fs'
 import path from 'path'
 app.post('/api/integrations/unified', requireAuth, async (req, res) => {
   try {
     const result = await unifiedAction(req.body)
+    // Log success
+    try {
+      const logDir = path.join(process.cwd(), 'backend', 'logs')
+      if (!fs.existsSync(logDir)) fs.mkdirSync(logDir, { recursive: true })
+      const line = JSON.stringify({ ts: new Date().toISOString(), type: 'unifiedAction', status: 'success', input: req.body, result }) + '\n'
+      fs.appendFileSync(path.join(logDir, 'integration_actions.log'), line)
+    } catch {}
     res.json(result)
   } catch (e: any) {
     const status = e?.status || 500
     const message = e?.message || 'integration error'
+    // Log failure
+    try {
+      const logDir = path.join(process.cwd(), 'backend', 'logs')
+      if (!fs.existsSync(logDir)) fs.mkdirSync(logDir, { recursive: true })
+      const line = JSON.stringify({ ts: new Date().toISOString(), type: 'unifiedAction', status: 'error', input: req.body, error: { status, message } }) + '\n'
+      fs.appendFileSync(path.join(logDir, 'integration_actions.log'), line)
+    } catch {}
     res.status(status).json({ error: message })
   }
 })
@@ -579,6 +594,51 @@ app.post('/api/webhooks/twilio', express.urlencoded({ extended: false }), (req, 
 
 // Basic WhatsApp logging middleware for sends (optional expansion)
 // Could be enhanced to handle WhatsApp webhooks when configured.
+
+// Nango connections management API (server-side only; requires NANGO_SECRET_KEY)
+app.get('/api/nango/connections', requireAuth, async (_req, res) => {
+  try {
+    const client = new NangoClient()
+    const data = await client.listConnections()
+    res.json(data)
+  } catch (e: any) {
+    res.status(e?.status || 500).json({ error: e?.message || 'failed to list connections' })
+  }
+})
+
+app.get('/api/nango/connections/:connectionId', requireAuth, async (req, res) => {
+  try {
+    const client = new NangoClient()
+    const data = await client.getConnection(req.params.connectionId)
+    res.json(data)
+  } catch (e: any) {
+    res.status(e?.status || 500).json({ error: e?.message || 'failed to get connection' })
+  }
+})
+
+app.post('/api/nango/connections/import', requireAuth, async (req, res) => {
+  try {
+    const body = req.body || {}
+    if (!body.provider_config_key || !body.connection_id || !body.credentials) {
+      return res.status(400).json({ error: 'provider_config_key, connection_id & credentials required' })
+    }
+    const client = new NangoClient()
+    const data = await client.importConnection(body)
+    res.json(data)
+  } catch (e: any) {
+    res.status(e?.status || 500).json({ error: e?.message || 'failed to import connection' })
+  }
+})
+
+app.delete('/api/nango/connections/:connectionId', requireAuth, async (req, res) => {
+  try {
+    const client = new NangoClient()
+    const data = await client.deleteConnection(req.params.connectionId)
+    res.json(data || { ok: true })
+  } catch (e: any) {
+    res.status(e?.status || 500).json({ error: e?.message || 'failed to delete connection' })
+  }
+})
 
 app.get('/api/integrations/connections', async (_req, res) => {
   if (USE_SUPABASE) {

@@ -236,6 +236,30 @@ class ApiClient {
     return response.data;
   }
 
+  // Nango Connections (server-side proxy endpoints)
+  async getNangoConnections() {
+    const response = await this.client.get('/api/nango/connections');
+    return response.data;
+  }
+  async getNangoConnection(connectionId: string) {
+    const response = await this.client.get(`/api/nango/connections/${connectionId}`);
+    return response.data;
+  }
+  async importNangoConnection(body: { provider_config_key: string; connection_id: string; credentials: any }) {
+    const response = await this.client.post('/api/nango/connections/import', body);
+    return response.data;
+  }
+  async deleteNangoConnection(connectionId: string) {
+    const response = await this.client.delete(`/api/nango/connections/${connectionId}`);
+    return response.data;
+  }
+
+  // Unified integration actions
+  async unifiedAction(payload: { provider: 'nango' | 'panora'; resource: string; operation: string; data?: any; id?: string; params?: any }) {
+    const response = await this.client.post('/api/integrations/unified', payload);
+    return response.data;
+  }
+
   // Audit Log
   async getAuditLog(params?: { limit?: number; offset?: number }) {
     const response = await this.client.get('/api/audit', { params });
