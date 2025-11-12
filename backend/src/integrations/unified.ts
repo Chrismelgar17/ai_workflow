@@ -1,7 +1,7 @@
 import { NangoClient } from './nangoClient.js'
 import { WhatsAppService } from './whatsapp.js'
 import { PanoraClient } from './panoraClient.js'
-import { TwilioService } from './twilio'
+import { TwilioService } from './twilio.js'
 
 // Input payload contract for unifiedAction
 // provider: which aggregator to use ('nango' | 'panora')
