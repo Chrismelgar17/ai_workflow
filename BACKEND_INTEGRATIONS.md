@@ -106,6 +106,24 @@ POST /api/integrations/unified
 }
 ```
 
+- Send a Twilio SMS via Nango Proxy
+```
+POST /api/integrations/unified
+{
+  "provider": "nango",
+  "resource": "twilio.sms",
+  "operation": "create",
+  "data": {
+    "providerConfigKey": "twilio",
+    "connectionId": "conn_twilio_1",
+    "from": "+15005550006",
+    "to": "+15551234567",
+    "body": "Hello via Twilio!",
+    "accountSid": "ACxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx" // optional; provider config can template this
+  }
+}
+```
+
 Notes for WhatsApp Cloud via Nango:
 - You need to create an Integration (Provider Config) in Nango with a unique key (e.g. `whatsapp-business`). Since WhatsApp might not be pre-built yet, configure it as a custom provider and store the required credentials.
 - Create a Connection for that provider in Nango using your Meta App credentials and access token. The backend will use Nango's Requests Proxy to call the WhatsApp Cloud API.
@@ -152,6 +170,7 @@ npm run whatsapp:test -- \
 
 - The unified clients are thin wrappers over REST endpoints and expect your Nango/Panora deployment to expose compatible paths such as `/crm/contacts` and `/hris/employees`.
 - For WhatsApp, the backend uses Nango's Requests Proxy at `/proxy/{endpoint}` and passes `Provider-Config-Key` and `Connection-Id` headers as required by Nango.
+- For Twilio, the backend uses Nango's Requests Proxy with `Base-Url-Override: https://api.twilio.com` and endpoint `/2010-04-01/Accounts/{AccountSid}/Messages.json`. Configure the provider to inject Basic Auth (AccountSid:AuthToken) or OAuth token as applicable.
 - If your deployment uses different paths or headers, tweak `backend/src/integrations/nangoClient.ts` and `panoraClient.ts` accordingly.
 - The unified endpoint requires auth (`requireAuth`), aligning with other write operations.
 

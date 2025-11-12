@@ -2,13 +2,19 @@ import 'dotenv/config'
 import { NangoClient } from '../integrations/nangoClient.js'
 
 /*
-  Usage (API Key style for WhatsApp Cloud long-lived token):
-  npm run nango:import -- --providerConfigKey=whatsapp-business --connectionId=whatsapp-prod-1 --apiKey=<WHATSAPP_TOKEN>
+  Usage:
+  - API Key style (e.g., WhatsApp Cloud long-lived token):
+    npm run nango:import -- --providerConfigKey=whatsapp-business --connectionId=whatsapp-prod-1 --apiKey=<TOKEN>
+
+  - BASIC auth (e.g., Twilio Account SID + Auth Token):
+    npm run nango:import -- --providerConfigKey=twilio --connectionId=twilio-conn-1 --basicUser=<ACCOUNT_SID> --basicPass=<AUTH_TOKEN>
 
   Flags:
     --providerConfigKey  (required)
     --connectionId       (required)
-    --apiKey             (required) long-lived access token
+    --apiKey             (optional) long-lived access token (type API_KEY)
+    --basicUser          (optional) BASIC auth username (e.g., Account SID)
+    --basicPass          (optional) BASIC auth password (e.g., Auth Token)
     --base               (optional) overrides NANGO_API_BASE env
     --key                (optional) overrides NANGO_SECRET_KEY env
 */
@@ -27,11 +33,13 @@ async function main() {
   const providerConfigKey = getFlag('providerConfigKey')
   const connectionId = getFlag('connectionId')
   const apiKey = getFlag('apiKey')
+  const basicUser = getFlag('basicUser')
+  const basicPass = getFlag('basicPass')
   const base = getFlag('base') || process.env.NANGO_API_BASE || process.env.NANGO_API_BASE_DEV || process.env.NANGO_HOST
   const secret = getFlag('key') || process.env.NANGO_SECRET_KEY || process.env.NANGO_SECRET_KEY_DEV
 
-  if (!providerConfigKey || !connectionId || !apiKey) {
-    console.error('Missing required flags: --providerConfigKey --connectionId --apiKey')
+  if (!providerConfigKey || !connectionId || (!apiKey && !(basicUser && basicPass))) {
+    console.error('Missing required flags: --providerConfigKey --connectionId and one of (--apiKey | --basicUser + --basicPass)')
     process.exit(1)
   }
   if (!base || !secret) {
@@ -41,14 +49,16 @@ async function main() {
 
   const client = new NangoClient({ baseUrl: base, secretKey: secret })
   try {
-    const body = {
+    const body: any = {
       provider_config_key: providerConfigKey,
       connection_id: connectionId,
-      credentials: {
-        type: 'API_KEY',
-        api_key: apiKey,
-      },
+      credentials: undefined,
       metadata: {},
+    }
+    if (apiKey) {
+      body.credentials = { type: 'API_KEY', api_key: apiKey }
+    } else {
+      body.credentials = { type: 'BASIC', username: basicUser, password: basicPass }
     }
     const resp = await client.importConnection(body)
     console.log('Imported connection:', JSON.stringify(resp, null, 2))

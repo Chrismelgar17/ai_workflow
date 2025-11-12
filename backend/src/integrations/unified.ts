@@ -1,6 +1,7 @@
 import { NangoClient } from './nangoClient.js'
 import { WhatsAppService } from './whatsapp.js'
 import { PanoraClient } from './panoraClient.js'
+import { TwilioService } from './twilio'
 
 // Input payload contract for unifiedAction
 // provider: which aggregator to use ('nango' | 'panora')
@@ -47,6 +48,20 @@ async function handleNango(domain: string, entity: string, op: string, ctx: { id
     const d = ctx.data || {}
     const required = ['providerConfigKey', 'connectionId', 'phoneNumberId']
     for (const k of required) if (!d[k]) throw Object.assign(new Error(`${k} required`), { status: 400 })
+    if (d.type === 'image' && d.imageUrl) {
+      if (!d.to) throw Object.assign(new Error('to required for whatsapp image'), { status: 400 })
+      return svc.sendImage({
+        providerConfigKey: d.providerConfigKey,
+        connectionId: d.connectionId,
+        phoneNumberId: d.phoneNumberId,
+        to: d.to,
+        body: d.caption || '',
+        imageUrl: d.imageUrl,
+        caption: d.caption,
+        apiVersion: d.apiVersion,
+        baseUrlOverride: d.baseUrlOverride,
+      })
+    }
     if (d.type === 'template') {
       if (!d.template || !d.template.name || !d.template.language?.code) {
         throw Object.assign(new Error('template with name & language.code required'), { status: 400 })
@@ -72,6 +87,33 @@ async function handleNango(domain: string, entity: string, op: string, ctx: { id
       previewUrl: d.previewUrl,
       apiVersion: d.apiVersion,
       baseUrlOverride: d.baseUrlOverride,
+    })
+  }
+  // Twilio SMS via Nango Proxy
+  if (domain === 'twilio' && entity === 'sms') {
+    if (op !== 'create') throw Object.assign(new Error('unsupported op for twilio.sms'), { status: 400 })
+    const d = ctx.data || {}
+    const required = ['providerConfigKey', 'connectionId', 'from', 'to', 'body']
+    for (const k of required) if (!d[k]) throw Object.assign(new Error(`${k} required`), { status: 400 })
+    const twilio = new TwilioService(new NangoClient())
+    if (d.mediaUrl) {
+      return twilio.sendMedia({
+        providerConfigKey: d.providerConfigKey,
+        connectionId: d.connectionId,
+        from: d.from,
+        to: d.to,
+        body: d.body,
+        accountSid: d.accountSid,
+        mediaUrl: d.mediaUrl,
+      })
+    }
+    return twilio.sendSMS({
+      providerConfigKey: d.providerConfigKey,
+      connectionId: d.connectionId,
+      from: d.from,
+      to: d.to,
+      body: d.body,
+      accountSid: d.accountSid,
     })
   }
   if (domain === 'crm' && entity === 'contact') {

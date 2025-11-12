@@ -13,6 +13,7 @@
     "whatsapp:test": "tsx src/scripts/whatsapp_test.ts",
     "nango:connections": "tsx src/scripts/nango_connections.ts",
     "nango:import": "tsx src/scripts/nango_import_connection.ts"
+    ,"twilio:test": "tsx src/scripts/twilio_test.ts"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.45.1",

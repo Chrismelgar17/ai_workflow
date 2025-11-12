@@ -553,6 +553,8 @@ app.get('/api/analytics/overview', async (_req, res) => {
 // Integrations & OAuth2
 // Unified integration action endpoint: routes actions to Nango or Panora based on request body
 import { unifiedAction } from './integrations/unified.js'
+import fs from 'fs'
+import path from 'path'
 app.post('/api/integrations/unified', requireAuth, async (req, res) => {
   try {
     const result = await unifiedAction(req.body)
@@ -563,6 +565,20 @@ app.post('/api/integrations/unified', requireAuth, async (req, res) => {
     res.status(status).json({ error: message })
   }
 })
+
+// Twilio status webhook (message status callbacks)
+app.post('/api/webhooks/twilio', express.urlencoded({ extended: false }), (req, res) => {
+  // Twilio sends x-www-form-urlencoded with fields like MessageSid, MessageStatus, From, To
+  const payload = req.body || {}
+  const logDir = path.join(process.cwd(), 'backend', 'logs')
+  try { if (!fs.existsSync(logDir)) fs.mkdirSync(logDir, { recursive: true }) } catch {}
+  const line = JSON.stringify({ ts: new Date().toISOString(), provider: 'twilio', event: 'status', data: payload }) + '\n'
+  try { fs.appendFileSync(path.join(logDir, 'twilio_status.log'), line) } catch {}
+  res.json({ ok: true })
+})
+
+// Basic WhatsApp logging middleware for sends (optional expansion)
+// Could be enhanced to handle WhatsApp webhooks when configured.
 
 app.get('/api/integrations/connections', async (_req, res) => {
   if (USE_SUPABASE) {

@@ -34,6 +34,8 @@ async function main() {
   const msgType = (getArg('--type') || 'text').toLowerCase()
   const templateName = getArg('--templateName')
   const templateLang = getArg('--templateLang') || 'en_US'
+  const imageUrl = getArg('--imageUrl')
+  const caption = getArg('--caption')
 
   // Allow shortcut: body formatted as __TEMPLATE__:name|lang
   let inferredTemplate: { name: string; language: { code: string }; components: any[] } | null = null
@@ -57,7 +59,9 @@ async function main() {
   }
   try {
     let res: any
-    if (msgType === 'template' || inferredTemplate) {
+    if (imageUrl) {
+      res = await svc.sendImage({ providerConfigKey, connectionId, phoneNumberId, to, body, imageUrl, caption })
+    } else if (msgType === 'template' || inferredTemplate) {
       const finalTemplate = inferredTemplate || {
         name: templateName!,
         language: { code: templateLang },

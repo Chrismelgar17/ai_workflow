@@ -31,6 +31,20 @@ export class WhatsAppService {
     this.nango = nango || new NangoClient()
   }
 
+  private async doProxy(method: 'POST', endpoint: string, cfg: any, retries = 3): Promise<any> {
+    try {
+      return await this.nango.proxy(method, endpoint, cfg)
+    } catch (e: any) {
+      const status = e?.response?.status
+      if (retries > 0 && (status === 429 || (status >= 500 && status < 600))) {
+        const delay = (4 - retries) * 500
+        await new Promise(r => setTimeout(r, delay))
+        return this.doProxy(method, endpoint, cfg, retries - 1)
+      }
+      throw e
+    }
+  }
+
   async sendText(params: WhatsAppTextParams) {
     const version = params.apiVersion || 'v20.0'
     const baseUrl = params.baseUrlOverride || 'https://graph.facebook.com'
@@ -44,7 +58,7 @@ export class WhatsAppService {
         preview_url: params.previewUrl ?? false,
       },
     }
-    return this.nango.proxy('POST', endpoint, {
+    return this.doProxy('POST', endpoint, {
       providerConfigKey: params.providerConfigKey,
       connectionId: params.connectionId,
       baseUrlOverride: baseUrl,
@@ -62,7 +76,25 @@ export class WhatsAppService {
       type: 'template',
       template: params.template,
     }
-    return this.nango.proxy('POST', endpoint, {
+    return this.doProxy('POST', endpoint, {
+      providerConfigKey: params.providerConfigKey,
+      connectionId: params.connectionId,
+      baseUrlOverride: baseUrl,
+      data,
+    })
+  }
+
+  async sendImage(params: WhatsAppTextParams & { imageUrl: string; caption?: string }) {
+    const version = params.apiVersion || 'v20.0'
+    const baseUrl = params.baseUrlOverride || 'https://graph.facebook.com'
+    const endpoint = `${version}/${params.phoneNumberId}/messages`
+    const data = {
+      messaging_product: 'whatsapp',
+      to: params.to,
+      type: 'image',
+      image: { link: params.imageUrl, caption: params.caption },
+    }
+    return this.doProxy('POST', endpoint, {
       providerConfigKey: params.providerConfigKey,
       connectionId: params.connectionId,
       baseUrlOverride: baseUrl,
