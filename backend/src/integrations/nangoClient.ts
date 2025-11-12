@@ -5,8 +5,19 @@ export type NangoClientOptions = {
   secretKey?: string // Nango Secret Key (server-side)
 }
 
-const envBase = process.env.NANGO_API_BASE || process.env.NANGO_HOST || ''
-const envKey = process.env.NANGO_SECRET_KEY || ''
+const envBase =
+  process.env.NANGO_API_BASE ||
+  process.env.NANGO_API_BASE_DEV ||
+  process.env.NANGO_API_BASE_PROD ||
+  process.env.NANGO_HOST ||
+  process.env.NANGO_HOST_DEV ||
+  process.env.NANGO_HOST_PROD ||
+  ''
+const envKey =
+  process.env.NANGO_SECRET_KEY ||
+  process.env.NANGO_SECRET_KEY_DEV ||
+  process.env.NANGO_SECRET_KEY_PROD ||
+  ''
 
 export class NangoClient {
   private baseUrl: string
@@ -27,6 +38,65 @@ export class NangoClient {
     if (!this.baseUrl) throw Object.assign(new Error('Missing NANGO_API_BASE or NANGO_HOST'), { status: 400 })
     const url = `${this.baseUrl.replace(/\/$/, '')}${path.startsWith('/') ? path : `/${path}`}`
     const resp = await axios.request<T>({ url, method, headers: { ...this.authHeaders(), ...(cfg?.headers || {}) }, params: cfg?.params, data: cfg?.data, timeout: cfg?.timeout || 30000 })
+    return resp.data
+  }
+
+  // Nango Requests Proxy: forwards authenticated requests to external APIs
+  // Docs: https://nango.dev/docs/reference/api/proxy/post
+  async proxy<T = any>(method: 'GET'|'POST'|'PUT'|'PATCH'|'DELETE', endpoint: string, cfg: AxiosRequestConfig & {
+    providerConfigKey: string
+    connectionId: string
+    baseUrlOverride?: string
+  }) {
+    if (!this.baseUrl) throw Object.assign(new Error('Missing NANGO_API_BASE or NANGO_HOST'), { status: 400 })
+    const url = `${this.baseUrl.replace(/\/$/, '')}/proxy/${endpoint.replace(/^\//, '')}`
+    const headers: Record<string, string> = {
+      ...this.authHeaders(),
+      'Provider-Config-Key': cfg.providerConfigKey,
+      'Connection-Id': cfg.connectionId,
+      ...(cfg.baseUrlOverride ? { 'Base-Url-Override': cfg.baseUrlOverride } : {}),
+    }
+    const resp = await axios.request<T>({
+      url,
+      method,
+      headers: { ...headers, ...(cfg.headers || {}) },
+      params: cfg.params,
+      data: cfg.data,
+      timeout: cfg.timeout || 30000,
+    })
+    return resp.data
+  }
+
+  // Admin APIs
+  // GET /connections -> list connections (no credentials)
+  async listConnections<T = any>() {
+    if (!this.baseUrl) throw Object.assign(new Error('Missing NANGO_API_BASE or NANGO_HOST'), { status: 400 })
+    const url = `${this.baseUrl.replace(/\/$/, '')}/connections`
+    const resp = await axios.get<T>(url, { headers: this.authHeaders(), timeout: 30000 })
+    return resp.data
+  }
+
+  // GET /connections/{connectionId}
+  async getConnection<T = any>(connectionId: string) {
+    if (!this.baseUrl) throw Object.assign(new Error('Missing NANGO_API_BASE or NANGO_HOST'), { status: 400 })
+    const url = `${this.baseUrl.replace(/\/$/, '')}/connections/${encodeURIComponent(connectionId)}`
+    const resp = await axios.get<T>(url, { headers: this.authHeaders(), timeout: 30000 })
+    return resp.data
+  }
+
+  // POST /connections -> import a connection with existing credentials
+  async importConnection<T = any>(body: any) {
+    if (!this.baseUrl) throw Object.assign(new Error('Missing NANGO_API_BASE or NANGO_HOST'), { status: 400 })
+    const url = `${this.baseUrl.replace(/\/$/, '')}/connections`
+    const resp = await axios.post<T>(url, body, { headers: { ...this.authHeaders(), 'Content-Type': 'application/json' }, timeout: 30000 })
+    return resp.data
+  }
+
+  // DELETE /connections/{connectionId} (optional cleanup helper)
+  async deleteConnection<T = any>(connectionId: string) {
+    if (!this.baseUrl) throw Object.assign(new Error('Missing NANGO_API_BASE or NANGO_HOST'), { status: 400 })
+    const url = `${this.baseUrl.replace(/\/$/, '')}/connections/${encodeURIComponent(connectionId)}`
+    const resp = await axios.delete<T>(url, { headers: this.authHeaders(), timeout: 30000 })
     return resp.data
   }
 

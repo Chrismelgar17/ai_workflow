@@ -1,4 +1,5 @@
 import { NangoClient } from './nangoClient.js'
+import { WhatsAppService } from './whatsapp.js'
 import { PanoraClient } from './panoraClient.js'
 
 // Input payload contract for unifiedAction
@@ -39,6 +40,40 @@ export async function unifiedAction(input: UnifiedActionInput) {
 
 async function handleNango(domain: string, entity: string, op: string, ctx: { id?: string; data?: any; params?: any }) {
   const client = new NangoClient()
+  // WhatsApp Business via Nango Proxy
+  if (domain === 'whatsapp' && entity === 'message') {
+    if (op !== 'create') throw Object.assign(new Error('unsupported op for whatsapp.message'), { status: 400 })
+    const svc = new WhatsAppService(client)
+    const d = ctx.data || {}
+    const required = ['providerConfigKey', 'connectionId', 'phoneNumberId']
+    for (const k of required) if (!d[k]) throw Object.assign(new Error(`${k} required`), { status: 400 })
+    if (d.type === 'template') {
+      if (!d.template || !d.template.name || !d.template.language?.code) {
+        throw Object.assign(new Error('template with name & language.code required'), { status: 400 })
+      }
+      return svc.sendTemplate({
+        providerConfigKey: d.providerConfigKey,
+        connectionId: d.connectionId,
+        phoneNumberId: d.phoneNumberId,
+        to: d.to,
+        template: d.template,
+        apiVersion: d.apiVersion,
+        baseUrlOverride: d.baseUrlOverride,
+      })
+    }
+    // default to text
+    if (!d.to || !d.body) throw Object.assign(new Error('to and body required for whatsapp text'), { status: 400 })
+    return svc.sendText({
+      providerConfigKey: d.providerConfigKey,
+      connectionId: d.connectionId,
+      phoneNumberId: d.phoneNumberId,
+      to: d.to,
+      body: d.body,
+      previewUrl: d.previewUrl,
+      apiVersion: d.apiVersion,
+      baseUrlOverride: d.baseUrlOverride,
+    })
+  }
   if (domain === 'crm' && entity === 'contact') {
     switch (op) {
       case 'list': return client.listCRMContacts(ctx.params)

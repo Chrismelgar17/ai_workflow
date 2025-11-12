@@ -1,0 +1,30 @@
+# Node/Next.js
+node_modules
+.next
+out
+dist
+
+# Logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+*.log
+
+# OS/editor
+.DS_Store
+.vscode
+
+# Env files (keep example)
+.env
+.env.*
+!/.env.example
+
+# Tooling
+.vercel
+
+# Reduce context size: exclude backend from UI image build
+backend/
+
+# Docker
+docker-compose.override.yml

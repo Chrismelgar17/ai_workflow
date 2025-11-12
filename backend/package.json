@@ -9,13 +9,17 @@
     "build": "tsc -p tsconfig.json",
     "seed": "tsx src/scripts/seed.ts",
     "seed:dist": "node dist/scripts/seed.js",
-    "user:create": "tsx src/scripts/create_user.ts"
+    "user:create": "tsx src/scripts/create_user.ts",
+    "whatsapp:test": "tsx src/scripts/whatsapp_test.ts",
+    "nango:connections": "tsx src/scripts/nango_connections.ts",
+    "nango:import": "tsx src/scripts/nango_import_connection.ts"
   },
   "dependencies": {
+    "@supabase/supabase-js": "^2.45.1",
     "axios": "^1.6.8",
     "cors": "^2.8.5",
+    "dotenv": "^16.6.1",
     "express": "^4.19.2",
-    "@supabase/supabase-js": "^2.45.1",
     "morgan": "^1.10.0",
     "swagger-ui-express": "^5.0.1",
     "uuid": "^9.0.1"
