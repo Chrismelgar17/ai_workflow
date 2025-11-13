@@ -500,17 +500,168 @@ export function WorkflowCanvas({ workflowId, onBack }: WorkflowCanvasProps) {
                       <div className="space-y-2">
                         <Label>Configuration</Label>
                         <div className="rounded-lg border border-border bg-muted/50 p-4 space-y-3">
-                          <div className="space-y-2">
-                            <Label className="text-xs">Parameter 1</Label>
-                            <Input placeholder="Enter value..." className="h-8 text-sm" />
-                          </div>
-                          <div className="space-y-2">
-                            <Label className="text-xs">Parameter 2</Label>
-                            <Input placeholder="Enter value..." className="h-8 text-sm" />
-                          </div>
-                          <p className="text-xs text-muted-foreground">
-                            Configure {selectedStepData.action} parameters
-                          </p>
+                          {/* Scheduler specific config */}
+                          {(selectedStepData.service === 'scheduler' && selectedStepData.action === 'Schedule Task') ? (
+                            <>
+                              <div className="space-y-2">
+                                <Label className="text-xs">Calendar</Label>
+                                <Input
+                                  placeholder="Calendar ID (e.g., primary)"
+                                  className="h-8 text-sm"
+                                  value={(selectedStepData.config?.calendarId as string) || ''}
+                                  onChange={(e) => {
+                                    const cfg: any = { ...(selectedStepData.config || {}), calendarId: e.target.value }
+                                    updateStep(selectedStepData.id, { config: cfg })
+                                  }}
+                                />
+                              </div>
+                              <div className="space-y-2">
+                                <Label className="text-xs">Description</Label>
+                                <Textarea
+                                  placeholder="What is this scheduled task?"
+                                  className="min-h-[60px] text-sm"
+                                  value={(selectedStepData.config?.description as string) || ''}
+                                  onChange={(e) => {
+                                    const cfg: any = { ...(selectedStepData.config || {}), description: e.target.value }
+                                    updateStep(selectedStepData.id, { config: cfg })
+                                  }}
+                                />
+                              </div>
+                              {/* Date & Time pickers */}
+                              <div className="grid grid-cols-1 gap-3">
+                                <div className="space-y-2">
+                                  <Label className="text-xs">Date</Label>
+                                  <Input
+                                    type="date"
+                                    className="h-8 text-sm"
+                                    value={(selectedStepData.config?.calendarDate as string) || ''}
+                                    onChange={(e) => {
+                                        const cfg: any = { ...(selectedStepData.config || {}), calendarDate: e.target.value }
+                                      // derive ISO previews if times exist
+                                      const startTime = cfg.startTime as string | undefined
+                                      const endTime = cfg.endTime as string | undefined
+                                      if (e.target.value && (startTime || endTime)) {
+                                        if (startTime) cfg.start = `${e.target.value}T${startTime}:00`
+                                        if (endTime) cfg.end = `${e.target.value}T${endTime}:00`
+                                      }
+                                      updateStep(selectedStepData.id, { config: cfg })
+                                    }}
+                                  />
+                                </div>
+                                <div className="grid grid-cols-2 gap-3">
+                                  <div className="space-y-2">
+                                    <Label className="text-xs">Start Time</Label>
+                                    <Input
+                                      type="time"
+                                      className="h-8 text-sm"
+                                      value={(selectedStepData.config?.startTime as string) || ''}
+                                      onChange={(e) => {
+                                        const cfg: any = { ...(selectedStepData.config || {}), startTime: e.target.value }
+                                        const date = cfg.calendarDate as string | undefined
+                                        if (date && e.target.value) cfg.start = `${date}T${e.target.value}:00`
+                                        updateStep(selectedStepData.id, { config: cfg })
+                                      }}
+                                    />
+                                  </div>
+                                  <div className="space-y-2">
+                                    <Label className="text-xs">End Time</Label>
+                                    <Input
+                                      type="time"
+                                      className="h-8 text-sm"
+                                      value={(selectedStepData.config?.endTime as string) || ''}
+                                      onChange={(e) => {
+                                        const cfg: any = { ...(selectedStepData.config || {}), endTime: e.target.value }
+                                        const date = cfg.calendarDate as string | undefined
+                                        if (date && e.target.value) cfg.end = `${date}T${e.target.value}:00`
+                                        updateStep(selectedStepData.id, { config: cfg })
+                                      }}
+                                    />
+                                  </div>
+                                </div>
+                                <div className="grid grid-cols-2 gap-3">
+                                  <div className="space-y-2">
+                                    <Label className="text-xs">Timezone</Label>
+                                    <Input
+                                      placeholder="UTC"
+                                      className="h-8 text-sm"
+                                      value={(selectedStepData.config?.timezone as string) || ''}
+                                      onChange={(e) => {
+                                        const cfg: any = { ...(selectedStepData.config || {}), timezone: e.target.value }
+                                        updateStep(selectedStepData.id, { config: cfg })
+                                      }}
+                                    />
+                                  </div>
+                                  <div className="space-y-2">
+                                    <Label className="text-xs">Preview</Label>
+                                    <div className="text-[11px] text-muted-foreground border rounded px-2 py-1 h-8 flex items-center">
+                                      {(selectedStepData.config?.start as string) || 'start not set'} → {(selectedStepData.config?.end as string) || 'end not set'}
+                                    </div>
+                                  </div>
+                                </div>
+                              </div>
+                              <p className="text-[11px] text-muted-foreground">Pick date and start/end times. We’ll store ISO-like local times and optional timezone.</p>
+                            </>
+                          ) : null}
+
+                          {/* Messaging/Email specific config */}
+                          {((selectedStepData.service === 'messaging' && selectedStepData.action === 'Send Message')
+                            || (selectedStepData.service === 'notification' && selectedStepData.action === 'Send SMS')
+                            || (selectedStepData.service === 'email' && (selectedStepData.action === 'Send Email' || selectedStepData.action === 'Send Template Email')))
+                            ? (
+                              <>
+                                <div className="space-y-2">
+                                  <Label className="text-xs">Sender</Label>
+                                  <Input
+                                    placeholder={selectedStepData.service === 'email' ? 'from@example.com' : '+1... or phoneNumberId'}
+                                    className="h-8 text-sm"
+                                    value={(selectedStepData.config?.sender as string) || ''}
+                                    onChange={(e) => {
+                                      const cfg = { ...(selectedStepData.config || {}), sender: e.target.value }
+                                      updateStep(selectedStepData.id, { config: cfg })
+                                    }}
+                                  />
+                                </div>
+                                <div className="space-y-2">
+                                  <Label className="text-xs">Receiver</Label>
+                                  <Input
+                                    placeholder={selectedStepData.service === 'email' ? 'to@example.com' : '+1...'}
+                                    className="h-8 text-sm"
+                                    value={(selectedStepData.config?.receiver as string) || ''}
+                                    onChange={(e) => {
+                                      const cfg = { ...(selectedStepData.config || {}), receiver: e.target.value }
+                                      updateStep(selectedStepData.id, { config: cfg })
+                                    }}
+                                  />
+                                </div>
+                                <div className="space-y-2">
+                                  <Label className="text-xs">Message Body</Label>
+                                  <Textarea
+                                    placeholder={selectedStepData.service === 'email' ? 'Email body...' : 'Message text...'}
+                                    className="min-h-[80px] text-sm"
+                                    value={(selectedStepData.config?.body as string) || ''}
+                                    onChange={(e) => {
+                                      const cfg = { ...(selectedStepData.config || {}), body: e.target.value }
+                                      updateStep(selectedStepData.id, { config: cfg })
+                                    }}
+                                  />
+                                  <p className="text-[11px] text-muted-foreground">Provide sender, receiver, and message body.</p>
+                                </div>
+                              </>
+                            ) : (! (selectedStepData.service === 'scheduler' && selectedStepData.action === 'Schedule Task') ? (
+                              <>
+                                <div className="space-y-2">
+                                  <Label className="text-xs">Parameter 1</Label>
+                                  <Input placeholder="Enter value..." className="h-8 text-sm" />
+                                </div>
+                                <div className="space-y-2">
+                                  <Label className="text-xs">Parameter 2</Label>
+                                  <Input placeholder="Enter value..." className="h-8 text-sm" />
+                                </div>
+                                <p className="text-xs text-muted-foreground">
+                                  Configure {selectedStepData.action} parameters
+                                </p>
+                              </>
+                            ) : null)}
                         </div>
                       </div>
                     )}

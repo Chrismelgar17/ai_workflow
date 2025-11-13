@@ -2,6 +2,7 @@ import { NangoClient } from './nangoClient.js'
 import { WhatsAppService } from './whatsapp.js'
 import { PanoraClient } from './panoraClient.js'
 import { TwilioService } from './twilio.js'
+import { GoogleCalendarService } from './googleCalendar.js'
 
 // Input payload contract for unifiedAction
 // provider: which aggregator to use ('nango' | 'panora')
@@ -115,6 +116,41 @@ async function handleNango(domain: string, entity: string, op: string, ctx: { id
       body: d.body,
       accountSid: d.accountSid,
     })
+  }
+  // Google Calendar via Nango Proxy
+  if (domain === 'gcal' && (entity === 'event' || entity === 'calendar')) {
+    const svc = new GoogleCalendarService(new NangoClient())
+    const d = ctx.data || {}
+    if (entity === 'calendar') {
+      if (op !== 'list') throw Object.assign(new Error('unsupported op for gcal.calendar'), { status: 400 })
+      const required = ['providerConfigKey', 'connectionId']
+      for (const k of required) if (!d[k]) throw Object.assign(new Error(`${k} required`), { status: 400 })
+      return svc.listCalendars({ providerConfigKey: d.providerConfigKey, connectionId: d.connectionId, baseUrlOverride: d.baseUrlOverride })
+    }
+    if (entity === 'event') {
+      const requiredBase = ['providerConfigKey', 'connectionId']
+      for (const k of requiredBase) if (!d[k]) throw Object.assign(new Error(`${k} required`), { status: 400 })
+      switch (op) {
+        case 'list':
+          return svc.listEvents({
+            providerConfigKey: d.providerConfigKey,
+            connectionId: d.connectionId,
+            calendarId: d.calendarId,
+            timeMin: d.timeMin,
+            timeMax: d.timeMax,
+            maxResults: d.maxResults,
+            singleEvents: d.singleEvents,
+            orderBy: d.orderBy,
+            baseUrlOverride: d.baseUrlOverride,
+          })
+        case 'get':
+          if (!ctx.id) throw Object.assign(new Error('id (eventId) required'), { status: 400 })
+          return svc.getEvent({ providerConfigKey: d.providerConfigKey, connectionId: d.connectionId, calendarId: d.calendarId, eventId: ctx.id, baseUrlOverride: d.baseUrlOverride })
+        case 'create':
+          if (!d.event) throw Object.assign(new Error('event body required'), { status: 400 })
+          return svc.createEvent({ providerConfigKey: d.providerConfigKey, connectionId: d.connectionId, calendarId: d.calendarId, event: d.event, baseUrlOverride: d.baseUrlOverride })
+      }
+    }
   }
   if (domain === 'crm' && entity === 'contact') {
     switch (op) {
