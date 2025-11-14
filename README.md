@@ -342,6 +342,51 @@ portal-ui:
     - portal-api
 ```
 
+## 🌩️ Vercel + Render Production (stable URL)
+
+Deploy the frontend to Vercel for a permanent URL, and the backend to a host like Render. Your production link stays the same across pushes; only the build behind it updates.
+
+### 1) Backend on Render (or any public host)
+
+- Use `render.yaml` (in repo root) to create a web service named `workflow-backend` with rootDir `backend`.
+- Set required env vars in Render:
+  - PORT=5000, CORS_ORIGIN=*
+  - SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY (if you use Supabase)
+  - NANGO_HOST, NANGO_SECRET_KEY
+  - TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_FROM_NUMBER
+  - DEFAULT_SMS_SENDER, DEFAULT_EMAIL_SENDER (set to verified values)
+  - NANGO_TWILIO_PROVIDER_CONFIG_KEY, NANGO_TWILIO_CONNECTION_ID
+  - NANGO_EMAIL_PROVIDER_CONFIG_KEY, NANGO_EMAIL_CONNECTION_ID
+  - SENDGRID_API_KEY
+- After deploy, note the public backend URL, e.g. `https://workflow-backend.onrender.com`.
+
+### 2) Frontend on Vercel (permanent alias)
+
+Create a Vercel project from this repo. In Project → Settings → Environment Variables (Production, and Preview if desired), set:
+
+- NEXT_PUBLIC_API_URL = https://workflow-backend.onrender.com
+- NEXT_PUBLIC_SUPABASE_URL = https://YOUR-PROJECT.supabase.co
+- NEXT_PUBLIC_SUPABASE_ANON_KEY = <your anon key>
+- NEXT_PUBLIC_APP_NAME = AI Workflow Portal (optional)
+- NEXT_PUBLIC_APP_VERSION = 3.0.0 (optional)
+- NEXT_PUBLIC_DEMO_MODE = false
+- NEXT_PUBLIC_NANGO_URL = https://api.nango.dev (optional)
+
+Build defaults are fine (`npm run build`). `next.config.js` already rewrites `/api/*` → `${NEXT_PUBLIC_API_URL}/api/*`, avoiding CORS.
+
+Set Production Branch = `main`. Each push to `main` automatically becomes Production at a stable URL such as `your-project.vercel.app`. You can also add a custom domain and it will remain constant across deployments.
+
+### 3) Test
+
+- Open the Vercel production URL and sign in (Supabase) or use demo if configured.
+- From the Workflow canvas, run a test; the browser hits `/api/*` on Vercel, which proxies to your backend.
+
+### Notes
+
+- Keep server-only secrets (Twilio, Nango, SendGrid, Supabase Service Role) on the backend host only.
+- If you later move the backend, just change `NEXT_PUBLIC_API_URL` in Vercel and redeploy.
+- For Twilio/SendGrid, ensure the default senders are verified/purchased; you can also override sender per step in the UI.
+
 ## 🧪 Testing
 
 ```bash
