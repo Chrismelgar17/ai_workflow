@@ -1,0 +1,18 @@
+{
+  "steps": [
+    {
+      "id": "sms1",
+      "type": "action",
+      "service": "notification",
+      "action": "Send SMS",
+      "config": { "receiver": "+15550002222", "body": "Hello from test run" }
+    },
+    {
+      "id": "email1",
+      "type": "action",
+      "service": "email",
+      "action": "Send Email",
+      "config": { "receiver": "user@example.com", "body": "Email body test", "subject": "Test" }
+    }
+  ]
+}

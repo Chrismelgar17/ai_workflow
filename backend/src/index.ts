@@ -46,7 +46,8 @@ const openapi: any = {
       put: { summary: 'Update flow', parameters: [{ name: 'id', in: 'path' }], responses: { '200': { description: 'ok' } } },
       delete: { summary: 'Delete flow', parameters: [{ name: 'id', in: 'path' }], responses: { '200': { description: 'ok' } } }
     },
-    '/api/flows/{id}/deploy': { post: { summary: 'Deploy flow', parameters: [{ name: 'id', in: 'path' }], responses: { '200': { description: 'ok' } } } },
+  '/api/flows/{id}/deploy': { post: { summary: 'Deploy flow', parameters: [{ name: 'id', in: 'path' }], responses: { '200': { description: 'ok' } } } },
+  '/api/flows/{id}/run': { post: { summary: 'Run flow (load triggers)', parameters: [{ name: 'id', in: 'path' }], responses: { '200': { description: 'ok' } } } },
     '/api/executions': { get: { summary: 'List executions', responses: { '200': { description: 'ok' } } } },
     '/api/flows/{flowId}/executions': { get: { summary: 'List executions by flow', parameters: [{ name: 'flowId', in: 'path' }], responses: { '200': { description: 'ok' } } } },
     '/api/executions/{id}': { get: { summary: 'Get execution', parameters: [{ name: 'id', in: 'path' }], responses: { '200': { description: 'ok' } } } },
@@ -62,6 +63,11 @@ const openapi: any = {
     '/api/oauth2/token': { post: { summary: 'OAuth2 token (mock)', responses: { '200': { description: 'ok' } } } },
     '/api/audit': { get: { summary: 'Audit log', responses: { '200': { description: 'ok' } } } },
     '/api/integrations/unified': { post: { summary: 'Unified integration action (Nango/Panora)', responses: { '200': { description: 'ok' } } } }
+    ,'/api/integrations/default-senders': { get: { summary: 'Default sender identifiers', responses: { '200': { description: 'ok' } } } }
+    ,'/api/integrations/twilio/connect-nango': { post: { summary: 'Import Twilio connection into Nango', responses: { '200': { description: 'ok' } } } }
+    ,'/api/integrations/twilio/connection/{connectionId}': { get: { summary: 'Get Twilio Nango connection', parameters: [{ name: 'connectionId', in: 'path' }], responses: { '200': { description: 'ok' } } } }
+  ,'/api/integrations/twilio/ensure-nango-connection': { post: { summary: 'Ensure Twilio connection in Nango from env', responses: { '200': { description: 'ok' } } } }
+  ,'/api/integrations/email/ensure-nango-sendgrid': { post: { summary: 'Ensure SendGrid email connection in Nango from env', responses: { '200': { description: 'ok' } } } }
   }
 }
 
@@ -430,6 +436,137 @@ app.post('/api/flows/:id/deploy', requireAuth, async (req, res) => {
   res.json({ ok: true, id: f.id, status: f.status })
 })
 
+// Compile and "run" a flow: register triggers/schedules (mock/demo implementation)
+app.post('/api/flows/:id/run', requireAuth, async (req, res) => {
+  const body = req.body || {}
+  const steps = Array.isArray(body.steps) ? body.steps : []
+  const connections = Array.isArray(body.connections) ? body.connections : []
+
+  type RegTrigger = { id: string; type: string; service?: string; action?: string; endpoint?: string }
+  type RegSchedule = { id: string; start?: string; end?: string; timezone?: string; calendarId?: string; description?: string }
+  const triggers: RegTrigger[] = []
+  const schedules: RegSchedule[] = []
+
+  // Derive a base URL for generated endpoints (UI port as default)
+  const baseUrl = process.env.PUBLIC_PORTAL_URL || `http://localhost:${process.env.PORTAL_PORT || '3002'}`
+
+  for (const s of steps) {
+    // Trigger registration (e.g., HTTP Webhook)
+    if (s.type === 'trigger') {
+      const t: RegTrigger = { id: s.id, type: 'trigger', service: s.service, action: s.action }
+      if ((s.service || '').toLowerCase().includes('http') || (s.action || '').toLowerCase().includes('webhook')) {
+        t.endpoint = `${baseUrl}/api/hooks/${req.params.id}/${s.id}`
+      }
+      triggers.push(t)
+    }
+    // Scheduler registration
+    if (s.service === 'scheduler' && s.action === 'Schedule Task') {
+      const cfg = (s as any).config || {}
+      schedules.push({ id: s.id, start: cfg.start, end: cfg.end, timezone: cfg.timezone, calendarId: cfg.calendarId, description: cfg.description })
+    }
+  }
+
+  // Optional immediate execution of certain actions (best-effort demo run)
+  const executions: Array<{ stepId: string; type: string; status: 'success'|'error'|'skipped'; result?: any; error?: any }> = []
+  for (const s of steps) {
+    try {
+      if (s.type !== 'action') continue
+      const cfg = (s as any).config || {}
+      // SMS via Twilio
+      if (s.service === 'notification' && s.action === 'Send SMS') {
+        const providerConfigKey = cfg.providerConfigKey || process.env.NANGO_TWILIO_PROVIDER_CONFIG_KEY || process.env.TWILIO_PROVIDER_CONFIG_KEY
+        const connectionId = cfg.connectionId || process.env.NANGO_TWILIO_CONNECTION_ID || process.env.TWILIO_CONNECTION_ID
+        const accountSid = process.env.TWILIO_ACCOUNT_SID
+        const from = cfg.sender || process.env.DEFAULT_SMS_SENDER || process.env.TWILIO_FROM_NUMBER
+        const to = cfg.receiver
+        const bodyTxt = cfg.body
+        if (!providerConfigKey || !connectionId || !from || !to || !bodyTxt) {
+          executions.push({ stepId: s.id, type: 'twilio.sms', status: 'skipped', error: 'missing providerConfigKey/connectionId/from/to/body' })
+          continue
+        }
+        const result = await unifiedAction({
+          provider: 'nango',
+          resource: 'twilio.sms',
+          operation: 'create',
+          data: { providerConfigKey, connectionId, from, to, body: bodyTxt, accountSid, mediaUrl: cfg.mediaUrl }
+        } as any)
+        executions.push({ stepId: s.id, type: 'twilio.sms', status: 'success', result })
+        continue
+      }
+      // WhatsApp text via Cloud API
+      if (s.service === 'messaging' && s.action === 'Send Message') {
+        const providerConfigKey = cfg.providerConfigKey || process.env.NANGO_WHATSAPP_PROVIDER_CONFIG_KEY || process.env.WHATSAPP_PROVIDER_CONFIG_KEY
+        const connectionId = cfg.connectionId || process.env.NANGO_WHATSAPP_CONNECTION_ID || process.env.WHATSAPP_CONNECTION_ID
+        const phoneNumberId = cfg.sender || process.env.WHATSAPP_PHONE_NUMBER_ID || process.env.DEFAULT_WHATSAPP_SENDER
+        const to = cfg.receiver
+        const bodyTxt = cfg.body
+        if (!providerConfigKey || !connectionId || !phoneNumberId || !to || !bodyTxt) {
+          executions.push({ stepId: s.id, type: 'whatsapp.message', status: 'skipped', error: 'missing providerConfigKey/connectionId/phoneNumberId/to/body' })
+          continue
+        }
+        const result = await unifiedAction({
+          provider: 'nango',
+          resource: 'whatsapp.message',
+          operation: 'create',
+          data: { providerConfigKey, connectionId, phoneNumberId, to, body: bodyTxt }
+        } as any)
+        executions.push({ stepId: s.id, type: 'whatsapp.message', status: 'success', result })
+        continue
+      }
+      // Email via Nango (SendGrid or Outlook) using unifiedAction
+      if (s.service === 'email' && (s.action === 'Send Email' || s.action === 'Send Template Email')) {
+        const providerConfigKey = (cfg.providerConfigKey) || process.env.NANGO_EMAIL_PROVIDER_CONFIG_KEY
+        const connectionId = (cfg.connectionId) || process.env.NANGO_EMAIL_CONNECTION_ID
+        const to = cfg.receiver
+        const bodyTxt = cfg.body
+        const subject = cfg.subject || 'Notification'
+        const from = cfg.sender || process.env.DEFAULT_EMAIL_SENDER
+        if (!providerConfigKey || !connectionId || !to || !bodyTxt || (!from && String(providerConfigKey || '').toLowerCase().includes('sendgrid'))) {
+          executions.push({ stepId: s.id, type: 'email.message', status: 'skipped', error: 'missing providerConfigKey/connectionId/to/body' + (String(providerConfigKey || '').toLowerCase().includes('sendgrid') ? '/from' : '') })
+          continue
+        }
+        const result = await unifiedAction({
+          provider: 'nango',
+          resource: 'email.message',
+          operation: 'create',
+          data: { providerConfigKey, connectionId, from, to, subject, body: bodyTxt, contentType: 'Text' }
+        } as any)
+        executions.push({ stepId: s.id, type: 'email.message', status: 'success', result })
+        continue
+      }
+    } catch (e: any) {
+      // Enhanced error serialization: prefer upstream provider-specific message over generic axios message
+      const statusCode = e?.status || e?.response?.status
+      const upstream = e?.response?.data
+      // Try to extract a more specific provider config error message first
+      const upstreamSpecific = (upstream?.error?.message) || (typeof upstream?.error === 'string' ? upstream?.error : undefined) || upstream?.message
+      let message = upstreamSpecific || e?.message
+      if (!message) {
+        try { message = JSON.stringify(upstream || e) } catch { message = 'unknown error' }
+      }
+      const loweredFull = `${String(message)} ${(upstreamSpecific || '')}`.toLowerCase()
+      const isMissingProviderConfig = statusCode === 404 && (
+        loweredFull.includes('provider config not found') ||
+        loweredFull.includes('unknown_provider_config') ||
+        loweredFull.includes('integration does not exist') ||
+        loweredFull.includes('provider config')
+      )
+      if (isMissingProviderConfig) {
+        executions.push({ stepId: s.id, type: `${s.service}.${s.action}`, status: 'skipped', error: 'provider config/connection not found (create or re-import in Nango)' })
+      } else {
+        executions.push({ stepId: s.id, type: `${s.service}.${s.action}`, status: 'error', error: { message, status: statusCode, detail: upstream } })
+      }
+    }
+  }
+
+  // Append audit log entry (in-memory when not using Supabase)
+  if (!USE_SUPABASE) {
+    db.audit.unshift({ id: uuid(), actor: 'system', action: `run_flow ${req.params.id}`, at: new Date().toISOString() })
+  }
+  
+  res.json({ ok: true, flowId: req.params.id, registered: { triggers, schedules }, counts: { triggers: triggers.length, schedules: schedules.length }, connections, executions })
+})
+
 // Executions
 app.get('/api/executions', async (_req, res) => {
   if (USE_SUPABASE) {
@@ -706,6 +843,108 @@ app.get('/api/oauth2/authorize', (req, res) => {
   url.searchParams.set('code', code)
   if (state) url.searchParams.set('state', state)
   return res.redirect(url.toString())
+})
+
+// Default sender values for messaging/email/SMS (demo/config)
+app.get('/api/integrations/default-senders', requireAuth, (req, res) => {
+  const messagingSender = process.env.DEFAULT_WHATSAPP_SENDER || process.env.WHATSAPP_PHONE_NUMBER_ID || 'whatsapp_phone_id_demo'
+  const smsSender = process.env.DEFAULT_SMS_SENDER || process.env.TWILIO_FROM_NUMBER || '+18568050998'
+  const emailSender = process.env.DEFAULT_EMAIL_SENDER || 'christian@creamdigital.ai'
+  res.json({ messagingSender, smsSender, emailSender })
+})
+
+// Convenience: import a Twilio connection into Nango using Account SID/Auth Token
+// Body: { provider_config_key, connection_id, account_sid, auth_token }
+// Note: We DO NOT log credentials. Requires NANGO_HOST/NANGO_SECRET_KEY configured.
+app.post('/api/integrations/twilio/connect-nango', requireAuth, async (req, res) => {
+  try {
+    const { provider_config_key, connection_id, account_sid, auth_token } = req.body || {}
+    if (!provider_config_key || !connection_id || !account_sid || !auth_token) {
+      return res.status(400).json({ error: 'provider_config_key, connection_id, account_sid, auth_token required' })
+    }
+    const client = new NangoClient()
+    // Prefer BASIC auth schema for Twilio: username=account SID, password=auth token
+    const body = {
+      provider_config_key,
+      connection_id,
+      credentials: {
+        type: 'BASIC',
+        username: account_sid,
+        password: auth_token,
+      }
+    }
+    const data = await client.importConnection(body)
+    res.json(data)
+  } catch (e: any) {
+    const status = e?.status || 500
+    res.status(status).json({ error: e?.message || 'failed to import Twilio connection' })
+  }
+})
+
+// Fetch a Nango connection (for verification)
+app.get('/api/integrations/twilio/connection/:connectionId', requireAuth, async (req, res) => {
+  try {
+    const client = new NangoClient()
+    const data = await client.getConnection(req.params.connectionId)
+    res.json(data)
+  } catch (e: any) {
+    res.status(e?.status || 500).json({ error: e?.message || 'failed to get connection' })
+  }
+})
+
+// Ensure connection using environment variables (no secrets in request body)
+app.post('/api/integrations/twilio/ensure-nango-connection', requireAuth, async (_req, res) => {
+  try {
+    const provider_config_key = process.env.NANGO_TWILIO_PROVIDER_CONFIG_KEY || process.env.TWILIO_PROVIDER_CONFIG_KEY
+    const connection_id = process.env.NANGO_TWILIO_CONNECTION_ID || process.env.TWILIO_CONNECTION_ID
+    const account_sid = process.env.TWILIO_ACCOUNT_SID
+    const auth_token = process.env.TWILIO_AUTH_TOKEN
+    if (!provider_config_key || !connection_id || !account_sid || !auth_token) {
+      return res.status(400).json({ error: 'Missing one or more env vars: NANGO_TWILIO_PROVIDER_CONFIG_KEY, NANGO_TWILIO_CONNECTION_ID, TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN' })
+    }
+    const client = new NangoClient()
+    const body = {
+      provider_config_key,
+      connection_id,
+      credentials: {
+        type: 'BASIC',
+        username: account_sid,
+        password: auth_token,
+      }
+    }
+    const data = await client.importConnection(body)
+    res.json(data)
+  } catch (e: any) {
+    res.status(e?.status || 500).json({ error: e?.message || 'failed to ensure Twilio connection' })
+  }
+})
+// Ensure SendGrid email connection using API Key (import into Nango)
+// Requires: NANGO_EMAIL_PROVIDER_CONFIG_KEY, NANGO_EMAIL_CONNECTION_ID, SENDGRID_API_KEY
+app.post('/api/integrations/email/ensure-nango-sendgrid', requireAuth, async (_req, res) => {
+  try {
+    const provider_config_key = process.env.NANGO_EMAIL_PROVIDER_CONFIG_KEY
+    const connection_id = process.env.NANGO_EMAIL_CONNECTION_ID
+    const api_key = process.env.SENDGRID_API_KEY
+    if (!provider_config_key || !connection_id || !api_key) {
+      return res.status(400).json({ error: 'Missing one or more env vars: NANGO_EMAIL_PROVIDER_CONFIG_KEY, NANGO_EMAIL_CONNECTION_ID, SENDGRID_API_KEY' })
+    }
+    const client = new NangoClient()
+    const body = {
+      provider_config_key,
+      connection_id,
+      credentials: {
+        type: 'API_KEY',
+        apiKey: api_key,
+      }
+    }
+    const data = await client.importConnection(body)
+    res.json(data)
+  } catch (e: any) {
+    const status = e?.status || e?.response?.status || 500
+    let detail: any = undefined
+    try { detail = e?.response?.data } catch {}
+    res.status(status).json({ error: e?.message || 'failed to ensure SendGrid connection', detail })
+  }
 })
 app.post('/api/oauth2/token', (_req, res) => {
   res.json({ access_token: 'mock_access_' + uuid(), refresh_token: 'mock_refresh_' + uuid(), token_type: 'Bearer', expires_in: 3600 })

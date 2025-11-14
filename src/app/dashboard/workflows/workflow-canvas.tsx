@@ -24,9 +24,12 @@ import {
   Code,
   MoreVertical,
   AlertCircle,
+  CheckCircle,
+  MinusCircle,
 } from "lucide-react"
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu"
 import apiClient from "@/lib/api-client"
+import { cn } from "@/lib/utils"
 import useWorkflowCanvasStore, { WorkflowStep, StepConnection } from "@/stores/workflow-canvas-store"
 
 interface WorkflowCanvasProps {
@@ -53,6 +56,10 @@ export function WorkflowCanvas({ workflowId, onBack }: WorkflowCanvasProps) {
   const setSteps = (v: WorkflowStep[]) => store.setSteps(id, v)
   const setConnections = (v: StepConnection[]) => store.setConnections(id, v)
   const [isDeploying, setIsDeploying] = useState(false)
+  const [testRunning, setTestRunning] = useState(false)
+  const [defaultSenders, setDefaultSenders] = useState<{ messagingSender: string; smsSender: string; emailSender: string } | null>(null)
+  const [testErrors, setTestErrors] = useState<Array<{ stepId: string; field?: string; message: string; level: 'error'|'warning' }>>([])
+  const [lastRun, setLastRun] = useState<null | { counts: { triggers: number; schedules: number }; executions: Array<{ stepId: string; type: string; status: 'success'|'error'|'skipped'; result?: any; error?: any }> }>(null)
   const [selectedStep, setSelectedStep] = useState<string | null>("step-1")
   const [selectedConnection, setSelectedConnection] = useState<string | null>(null)
 
@@ -209,14 +216,176 @@ export function WorkflowCanvas({ workflowId, onBack }: WorkflowCanvasProps) {
     try {
       setIsDeploying(true)
       const flowId = id || `flow_${Date.now()}`
-      await apiClient.deployFlow(flowId)
-      setWorkflowStatus("active")
+      // Validate before run
+      const result = validateWorkflow()
+      if (!result.ok) {
+        // Mark statuses and show toast same as test run
+        const errorIds = new Set(result.errors.filter(e => e.level === 'error').map(e => e.stepId))
+        const newSteps = steps.map(s => errorIds.has(s.id) ? { ...s, status: 'error' as const } : { ...s, status: 'configured' as const })
+        setSteps(newSteps)
+        import('sonner').then(({ toast }) => {
+          const errorCount = result.errors.filter(e=>e.level==='error').length
+          const warnCount = result.warnings
+          toast.error(`Fix validation issues: ${errorCount} error${errorCount!==1?'s':''}${warnCount>0?`, ${warnCount} warning${warnCount!==1?'s':''}`:''}`)
+        })
+        return
+      }
+      // Run flow: load triggers
+      const payload = { steps, connections }
+      try {
+        const ran = await apiClient.runFlow(flowId, payload)
+        setLastRun({ counts: ran.counts, executions: (ran as any).executions || [] })
+        setWorkflowStatus("active")
+        import('sonner').then(({ toast }) => {
+          toast.success('Flow started', { description: `Loaded ${ran.counts.triggers} trigger(s) and ${ran.counts.schedules} schedule(s).` })
+          const skipped = ((ran as any).executions || []).filter((e: any) => e.status === 'skipped')
+          if (skipped.length > 0) {
+            toast.warning(`Some actions were skipped`, {
+              description: `Configure provider keys/connections or missing fields. Skipped: ${skipped.length}`
+            })
+          }
+        })
+      } catch (err: any) {
+        const status = err?.response?.status
+        if (status === 404) {
+          import('sonner').then(({ toast }) => {
+            toast.error('Backend missing /run endpoint', { description: 'Rebuild and restart the API container to pick up the new route.' })
+          })
+        }
+        throw err
+      }
     } catch (e) {
       // Best-effort: in demo mode this always succeeds, otherwise keep draft
     } finally {
       setIsDeploying(false)
     }
   }
+
+  const validateWorkflow = () => {
+  const errors: Array<{ stepId: string; field?: string; message: string; level: 'error'|'warning' }> = []
+    const emailRegex = /^[^@\s]+@[^@\s]+\.[^@\s]+$/
+    const phoneRegex = /^\+?[0-9]{7,15}$/
+
+    // Basic structural checks
+    if (steps.length === 0) {
+      errors.push({ stepId: 'global', message: 'Workflow has no steps', level: 'error' })
+    }
+    const trigger = steps[0]
+    if (trigger?.type !== 'trigger') {
+      errors.push({ stepId: trigger?.id || 'global', message: 'First step must be a trigger', level: 'error' })
+    }
+
+    // Map for inbound connections
+    const inboundCounts: Record<string, number> = {}
+    connections.forEach(c => { inboundCounts[c.toStep] = (inboundCounts[c.toStep] || 0) + 1 })
+
+    steps.forEach(step => {
+      // Non-trigger should have at least one inbound connection
+      if (step.type === 'action' && !inboundCounts[step.id]) {
+        errors.push({ stepId: step.id, message: 'Action step has no incoming connection', level: 'error' })
+      }
+      // Messaging/email validations
+      const isMessaging = (step.service === 'messaging' && step.action === 'Send Message')
+        || (step.service === 'notification' && step.action === 'Send SMS')
+        || (step.service === 'email' && (step.action === 'Send Email' || step.action === 'Send Template Email'))
+      if (isMessaging) {
+        const cfg: any = step.config || {}
+        // Sender intentionally ignored for test run validation
+        if (!cfg.receiver) errors.push({ stepId: step.id, field: 'receiver', message: 'Receiver is required', level: 'error' })
+        if (!cfg.body) errors.push({ stepId: step.id, field: 'body', message: 'Message body is required', level: 'error' })
+        if (step.service === 'email') {
+          if (cfg.receiver && !emailRegex.test(cfg.receiver)) errors.push({ stepId: step.id, field: 'receiver', message: 'Invalid email address', level: 'error' })
+        } else {
+          // Treat as phone if not email
+          if (cfg.receiver && !emailRegex.test(cfg.receiver) && !phoneRegex.test(cfg.receiver)) errors.push({ stepId: step.id, field: 'receiver', message: 'Receiver phone looks invalid', level: 'warning' })
+        }
+      }
+      // Scheduler validations
+      if (step.service === 'scheduler' && step.action === 'Schedule Task') {
+        const cfg: any = step.config || {}
+        if (!cfg.calendarDate) errors.push({ stepId: step.id, field: 'calendarDate', message: 'Date is required', level: 'error' })
+        if (!cfg.startTime) errors.push({ stepId: step.id, field: 'startTime', message: 'Start time is required', level: 'error' })
+        if (!cfg.endTime) errors.push({ stepId: step.id, field: 'endTime', message: 'End time is required', level: 'error' })
+        if (cfg.start && cfg.end) {
+          const startMs = Date.parse(cfg.start)
+          const endMs = Date.parse(cfg.end)
+            if (!isNaN(startMs) && !isNaN(endMs) && endMs <= startMs) {
+              errors.push({ stepId: step.id, field: 'endTime', message: 'End must be after start', level: 'error' })
+            }
+        }
+        if (!cfg.timezone) errors.push({ stepId: step.id, field: 'timezone', message: 'Timezone is recommended', level: 'warning' })
+      }
+    })
+    const warnings = errors.filter(e => e.level === 'warning').length
+    const fatal = errors.filter(e => e.level === 'error').length
+    return { ok: fatal === 0, errors, warnings }
+  }
+
+  const handleTestRun = () => {
+    setTestRunning(true)
+    try {
+      const result = validateWorkflow()
+      const errorIds = new Set(result.errors.filter(e => e.level === 'error').map(e => e.stepId))
+      const newSteps = steps.map(s => {
+        if (errorIds.has(s.id)) return { ...s, status: 'error' as const }
+        return { ...s, status: 'configured' as const }
+      })
+      setSteps(newSteps)
+      setTestErrors(result.errors)
+      // Toast notifications
+      import('sonner').then(({ toast }) => {
+        if (result.ok) {
+          toast.success('Workflow validation passed', { description: 'All checks succeeded. Ready to deploy.' })
+        } else {
+          const errorCount = result.errors.filter(e=>e.level==='error').length
+          const warnCount = result.warnings
+          const firstError = result.errors.find(e=>e.level==='error')
+          const summary = `${errorCount} error${errorCount!==1?'s':''}${warnCount>0?`, ${warnCount} warning${warnCount!==1?'s':''}`:''}`
+          toast.error(`Validation failed: ${summary}`, { description: firstError ? `${firstError.stepId}: ${firstError.message}` : 'Check configuration.' })
+          if (warnCount > 0) {
+            const firstWarn = result.errors.find(e=>e.level==='warning')
+            if (firstWarn) {
+              toast.warning(`Warning: ${firstWarn.stepId}`, { description: firstWarn.message })
+            }
+          }
+        }
+      })
+    } finally {
+      setTestRunning(false)
+    }
+  }
+
+  // Fetch default senders once
+  useEffect(() => {
+    let mounted = true
+    import('@/lib/api-client').then(({ apiClient }) => {
+      apiClient.getDefaultSenders().then(data => { if (mounted) setDefaultSenders(data) }).catch(() => {})
+    })
+    return () => { mounted = false }
+  }, [])
+
+  // Auto-apply default sender to all relevant steps when defaults are fetched, but allow user override per step
+  useEffect(() => {
+    if (!defaultSenders) return
+    const updated = steps.map((s) => {
+      const isMsg = (s.service === 'messaging' && s.action === 'Send Message')
+        || (s.service === 'notification' && s.action === 'Send SMS')
+        || (s.service === 'email' && (s.action === 'Send Email' || s.action === 'Send Template Email'))
+      if (!isMsg) return s
+      const cfg: any = s.config || {}
+      // Respect explicit override flag; if not overriding and no sender set, apply defaults
+      const override = cfg.overrideSender === true || cfg.overrideSender === 'true'
+      if (!override && !cfg.sender) {
+        let value = ''
+        if (s.service === 'messaging') value = defaultSenders.messagingSender
+        else if (s.service === 'notification') value = defaultSenders.smsSender
+        else if (s.service === 'email') value = defaultSenders.emailSender
+        return { ...s, config: { ...cfg, sender: value } }
+      }
+      return s
+    })
+    if (JSON.stringify(updated) !== JSON.stringify(steps)) setSteps(updated)
+  }, [defaultSenders])
 
   return (
     <div className="flex h-screen flex-col bg-background">
@@ -237,7 +406,7 @@ export function WorkflowCanvas({ workflowId, onBack }: WorkflowCanvasProps) {
           </div>
         </div>
         <div className="flex items-center gap-3">
-          <Button variant="outline">Test run</Button>
+          <Button variant="outline" onClick={handleTestRun} disabled={testRunning}>{testRunning ? 'Testing…' : 'Test run'}</Button>
           <Button onClick={handleDeploy} disabled={isDeploying}>
             {isDeploying ? 'Deploying…' : 'Deploy'}
           </Button>
@@ -247,6 +416,37 @@ export function WorkflowCanvas({ workflowId, onBack }: WorkflowCanvasProps) {
       <div className="flex flex-1 overflow-hidden">
         <div className="flex-1 overflow-y-auto bg-muted/30 py-8">
           <div className="mx-auto max-w-2xl px-4">
+            {/* Last run summary (once, above steps) */}
+            {lastRun && (
+              <div className="mb-6">
+                <Card className="p-4">
+                  <div className="flex items-center justify-between">
+                    <h3 className="font-semibold">Last Run</h3>
+                    <div className="text-sm text-muted-foreground">
+                      {lastRun.counts.triggers} triggers • {lastRun.counts.schedules} schedules
+                    </div>
+                  </div>
+                  <div className="mt-3 space-y-2">
+                    {lastRun.executions.length === 0 && (
+                      <div className="text-sm text-muted-foreground">No immediate actions executed.</div>
+                    )}
+                    {lastRun.executions.map((ex, i) => (
+                      <div key={i} className="flex items-center gap-2 text-sm">
+                        {ex.status === 'success' && <CheckCircle className="h-4 w-4 text-green-600" />}
+                        {ex.status === 'error' && <AlertCircle className="h-4 w-4 text-destructive" />}
+                        {ex.status === 'skipped' && <MinusCircle className="h-4 w-4 text-muted-foreground" />}
+                        <span className="font-medium">{ex.type}</span>
+                        <span className="text-muted-foreground">• step {ex.stepId}</span>
+                        {ex.status === 'error' && (
+                          <span className="text-destructive">— {ex.error?.message || 'error'}</span>
+                        )}
+                        {ex.status === 'skipped' && <span className="text-muted-foreground">— {ex.error}</span>}
+                      </div>
+                    ))}
+                  </div>
+                </Card>
+              </div>
+            )}
             {steps.map((step, index) => {
               const isSelected = selectedStep === step.id
               const connection = connections.find((c) => c.fromStep === step.id)
@@ -269,11 +469,7 @@ export function WorkflowCanvas({ workflowId, onBack }: WorkflowCanvasProps) {
                         <div className="mt-1">
                           {step.status === "incomplete" && <AlertCircle className="h-5 w-5 text-yellow-500" />}
                           {step.status === "error" && <AlertCircle className="h-5 w-5 text-destructive" />}
-                          {step.status === "configured" && (
-                            <div className="h-5 w-5 rounded-full bg-green-500 flex items-center justify-center">
-                              <div className="h-2 w-2 rounded-full bg-white" />
-                            </div>
-                          )}
+                          {step.status === "configured" && <CheckCircle className="h-5 w-5 text-green-600" />}
                         </div>
 
                         {/* Service Icon and Info */}
@@ -364,6 +560,8 @@ export function WorkflowCanvas({ workflowId, onBack }: WorkflowCanvasProps) {
               </Button>
             </div>
           </div>
+
+        
         </div>
 
         {(selectedStepData || selectedConnectionData) && (
@@ -533,7 +731,7 @@ export function WorkflowCanvas({ workflowId, onBack }: WorkflowCanvasProps) {
                                   <Label className="text-xs">Date</Label>
                                   <Input
                                     type="date"
-                                    className="h-8 text-sm"
+                                    className={cn("h-8 text-sm", (testErrors.find(e => e.stepId === selectedStepData.id && e.field === 'calendarDate' && e.level === 'error')) && "border-red-500 focus-visible:ring-red-500")}
                                     value={(selectedStepData.config?.calendarDate as string) || ''}
                                     onChange={(e) => {
                                         const cfg: any = { ...(selectedStepData.config || {}), calendarDate: e.target.value }
@@ -547,13 +745,16 @@ export function WorkflowCanvas({ workflowId, onBack }: WorkflowCanvasProps) {
                                       updateStep(selectedStepData.id, { config: cfg })
                                     }}
                                   />
+                                  {testErrors.find(e => e.stepId === selectedStepData.id && e.field === 'calendarDate' && e.level === 'error') && (
+                                    <p className="text-[11px] text-red-600">{testErrors.find(e => e.stepId === selectedStepData.id && e.field === 'calendarDate' && e.level === 'error')?.message}</p>
+                                  )}
                                 </div>
                                 <div className="grid grid-cols-2 gap-3">
                                   <div className="space-y-2">
                                     <Label className="text-xs">Start Time</Label>
                                     <Input
                                       type="time"
-                                      className="h-8 text-sm"
+                                      className={cn("h-8 text-sm", (testErrors.find(e => e.stepId === selectedStepData.id && e.field === 'startTime' && e.level === 'error')) && "border-red-500 focus-visible:ring-red-500")}
                                       value={(selectedStepData.config?.startTime as string) || ''}
                                       onChange={(e) => {
                                         const cfg: any = { ...(selectedStepData.config || {}), startTime: e.target.value }
@@ -562,12 +763,15 @@ export function WorkflowCanvas({ workflowId, onBack }: WorkflowCanvasProps) {
                                         updateStep(selectedStepData.id, { config: cfg })
                                       }}
                                     />
+                                    {testErrors.find(e => e.stepId === selectedStepData.id && e.field === 'startTime' && e.level === 'error') && (
+                                      <p className="text-[11px] text-red-600">{testErrors.find(e => e.stepId === selectedStepData.id && e.field === 'startTime' && e.level === 'error')?.message}</p>
+                                    )}
                                   </div>
                                   <div className="space-y-2">
                                     <Label className="text-xs">End Time</Label>
                                     <Input
                                       type="time"
-                                      className="h-8 text-sm"
+                                      className={cn("h-8 text-sm", (testErrors.find(e => e.stepId === selectedStepData.id && e.field === 'endTime' && e.level === 'error')) && "border-red-500 focus-visible:ring-red-500")}
                                       value={(selectedStepData.config?.endTime as string) || ''}
                                       onChange={(e) => {
                                         const cfg: any = { ...(selectedStepData.config || {}), endTime: e.target.value }
@@ -576,6 +780,9 @@ export function WorkflowCanvas({ workflowId, onBack }: WorkflowCanvasProps) {
                                         updateStep(selectedStepData.id, { config: cfg })
                                       }}
                                     />
+                                    {testErrors.find(e => e.stepId === selectedStepData.id && e.field === 'endTime' && e.level === 'error') && (
+                                      <p className="text-[11px] text-red-600">{testErrors.find(e => e.stepId === selectedStepData.id && e.field === 'endTime' && e.level === 'error')?.message}</p>
+                                    )}
                                   </div>
                                 </div>
                                 <div className="grid grid-cols-2 gap-3">
@@ -615,36 +822,96 @@ export function WorkflowCanvas({ workflowId, onBack }: WorkflowCanvasProps) {
                                     placeholder={selectedStepData.service === 'email' ? 'from@example.com' : '+1... or phoneNumberId'}
                                     className="h-8 text-sm"
                                     value={(selectedStepData.config?.sender as string) || ''}
+                                    disabled={!Boolean(selectedStepData.config?.overrideSender)}
                                     onChange={(e) => {
-                                      const cfg = { ...(selectedStepData.config || {}), sender: e.target.value }
+                                      const cfg: any = { ...(selectedStepData.config || {}), sender: e.target.value }
                                       updateStep(selectedStepData.id, { config: cfg })
                                     }}
                                   />
+                                  <div className="flex items-center gap-2">
+                                    <input
+                                      id={`override-${selectedStepData.id}`}
+                                      type="checkbox"
+                                      className="h-3 w-3"
+                                      checked={Boolean(selectedStepData.config?.overrideSender)}
+                                      onChange={(e) => {
+                                        const cfg: any = { ...(selectedStepData.config || {}), overrideSender: e.target.checked }
+                                        // If enabling override and sender is empty, seed with current default to make it editable
+                                        if (e.target.checked && !cfg.sender) {
+                                          cfg.sender = selectedStepData.service === 'email'
+                                            ? (defaultSenders?.emailSender || '')
+                                            : (selectedStepData.service === 'notification'
+                                              ? (defaultSenders?.smsSender || '')
+                                              : (defaultSenders?.messagingSender || ''))
+                                        }
+                                        updateStep(selectedStepData.id, { config: cfg })
+                                      }}
+                                    />
+                                    <label htmlFor={`override-${selectedStepData.id}`} className="text-[11px]">Override sender for this step</label>
+                                  </div>
+                                  <p className="text-[10px] text-muted-foreground">Use a verified SendGrid sender email for email steps, and a purchased/verified Twilio number for SMS.</p>
                                 </div>
                                 <div className="space-y-2">
                                   <Label className="text-xs">Receiver</Label>
                                   <Input
                                     placeholder={selectedStepData.service === 'email' ? 'to@example.com' : '+1...'}
-                                    className="h-8 text-sm"
+                                    className={cn("h-8 text-sm", (testErrors.find(e => e.stepId === selectedStepData.id && e.field === 'receiver' && e.level === 'error')) && "border-red-500 focus-visible:ring-red-500")}
                                     value={(selectedStepData.config?.receiver as string) || ''}
                                     onChange={(e) => {
                                       const cfg = { ...(selectedStepData.config || {}), receiver: e.target.value }
                                       updateStep(selectedStepData.id, { config: cfg })
                                     }}
                                   />
+                                  {testErrors.find(e => e.stepId === selectedStepData.id && e.field === 'receiver' && e.level === 'error') && (
+                                    <p className="text-[11px] text-red-600">{testErrors.find(e => e.stepId === selectedStepData.id && e.field === 'receiver' && e.level === 'error')?.message}</p>
+                                  )}
                                 </div>
                                 <div className="space-y-2">
                                   <Label className="text-xs">Message Body</Label>
                                   <Textarea
                                     placeholder={selectedStepData.service === 'email' ? 'Email body...' : 'Message text...'}
-                                    className="min-h-[80px] text-sm"
+                                    className={cn("min-h-[80px] text-sm", (testErrors.find(e => e.stepId === selectedStepData.id && e.field === 'body' && e.level === 'error')) && "border-red-500 focus-visible:ring-red-500")}
                                     value={(selectedStepData.config?.body as string) || ''}
                                     onChange={(e) => {
                                       const cfg = { ...(selectedStepData.config || {}), body: e.target.value }
                                       updateStep(selectedStepData.id, { config: cfg })
                                     }}
                                   />
+                                  {testErrors.find(e => e.stepId === selectedStepData.id && e.field === 'body' && e.level === 'error') && (
+                                    <p className="text-[11px] text-red-600">{testErrors.find(e => e.stepId === selectedStepData.id && e.field === 'body' && e.level === 'error')?.message}</p>
+                                  )}
                                   <p className="text-[11px] text-muted-foreground">Provide sender, receiver, and message body.</p>
+                                </div>
+                                {/* Advanced provider overrides */}
+                                <div className="mt-3 rounded-md border border-dashed p-3">
+                                  <p className="text-[11px] font-medium mb-2">Advanced</p>
+                                  <div className="grid grid-cols-2 gap-3">
+                                    <div className="space-y-1">
+                                      <Label className="text-[11px]">providerConfigKey</Label>
+                                      <Input
+                                        placeholder={selectedStepData.service === 'notification' ? 'twilio' : (selectedStepData.service === 'messaging' ? 'whatsapp' : 'sendgrid')}
+                                        className="h-8 text-sm"
+                                        value={((selectedStepData.config as any)?.providerConfigKey as string) || ''}
+                                        onChange={(e) => {
+                                          const cfg = { ...(selectedStepData.config || {}), providerConfigKey: e.target.value }
+                                          updateStep(selectedStepData.id, { config: cfg })
+                                        }}
+                                      />
+                                    </div>
+                                    <div className="space-y-1">
+                                      <Label className="text-[11px]">connectionId</Label>
+                                      <Input
+                                        placeholder={selectedStepData.service === 'notification' ? 'twilio_main' : (selectedStepData.service === 'messaging' ? 'whatsapp_main' : 'sendgrid_main')}
+                                        className="h-8 text-sm"
+                                        value={((selectedStepData.config as any)?.connectionId as string) || ''}
+                                        onChange={(e) => {
+                                          const cfg = { ...(selectedStepData.config || {}), connectionId: e.target.value }
+                                          updateStep(selectedStepData.id, { config: cfg })
+                                        }}
+                                      />
+                                    </div>
+                                  </div>
+                                  <p className="text-[10px] text-muted-foreground mt-2">Optional. Overrides project defaults for this step only. Leave empty to use environment configuration.</p>
                                 </div>
                               </>
                             ) : (! (selectedStepData.service === 'scheduler' && selectedStepData.action === 'Schedule Task') ? (

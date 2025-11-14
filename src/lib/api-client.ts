@@ -155,6 +155,11 @@ class ApiClient {
     return response.data;
   }
 
+  async runFlow(id: string, body: { steps: any[]; connections: any[] }) {
+    const response = await this.client.post(`/api/flows/${id}/run`, body);
+    return response.data as { ok: boolean; flowId: string; registered: { triggers: any[]; schedules: any[] }; counts: { triggers: number; schedules: number } };
+  }
+
   // Executions
   async getExecutions(flowId?: string) {
     const url = flowId ? `/api/flows/${flowId}/executions` : '/api/executions';
@@ -203,6 +208,11 @@ class ApiClient {
     } catch (e) {
       return demoData.connections;
     }
+  }
+
+  async getDefaultSenders() {
+    const response = await this.client.get('/api/integrations/default-senders');
+    return response.data as { messagingSender: string; smsSender: string; emailSender: string };
   }
 
   async getConnection(provider: string) {

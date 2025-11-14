@@ -8,7 +8,8 @@ export type WorkflowStep = {
   type: "trigger" | "action"
   service: string
   action: string
-  config: Record<string, string>
+  // Allow non-string values (booleans, numbers) in step config
+  config: Record<string, any>
   status: "configured" | "incomplete" | "error"
 }
 

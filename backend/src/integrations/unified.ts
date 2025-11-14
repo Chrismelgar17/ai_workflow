@@ -3,6 +3,7 @@ import { WhatsAppService } from './whatsapp.js'
 import { PanoraClient } from './panoraClient.js'
 import { TwilioService } from './twilio.js'
 import { GoogleCalendarService } from './googleCalendar.js'
+import { EmailService } from './email.js'
 
 // Input payload contract for unifiedAction
 // provider: which aggregator to use ('nango' | 'panora')
@@ -151,6 +152,37 @@ async function handleNango(domain: string, entity: string, op: string, ctx: { id
           return svc.createEvent({ providerConfigKey: d.providerConfigKey, connectionId: d.connectionId, calendarId: d.calendarId, event: d.event, baseUrlOverride: d.baseUrlOverride })
       }
     }
+  }
+  // Email via Nango Proxy (SendGrid or Outlook)
+  if (domain === 'email' && entity === 'message') {
+    if (op !== 'create') throw Object.assign(new Error('unsupported op for email.message'), { status: 400 })
+    const d = ctx.data || {}
+    const required = ['providerConfigKey', 'connectionId', 'to', 'body']
+    for (const k of required) if (!d[k]) throw Object.assign(new Error(`${k} required`), { status: 400 })
+    const svc = new EmailService(new NangoClient())
+    // Prefer SendGrid when providerConfigKey hints at it, else Outlook Graph
+    const key = String(d.providerConfigKey || '').toLowerCase()
+    if (key.includes('sendgrid')) {
+      if (!d.from) throw Object.assign(new Error('from required for sendgrid'), { status: 400 })
+      return svc.sendSendgrid({
+        providerConfigKey: d.providerConfigKey,
+        connectionId: d.connectionId,
+        from: d.from,
+        to: d.to,
+        subject: d.subject || '',
+        body: d.body,
+        contentType: (d.contentType?.toLowerCase?.() === 'text/html') ? 'text/html' : 'text/plain',
+      })
+    }
+    // Default to Outlook Graph
+    return svc.sendOutlook({
+      providerConfigKey: d.providerConfigKey,
+      connectionId: d.connectionId,
+      to: d.to,
+      subject: d.subject || '',
+      body: d.body,
+      contentType: d.contentType || 'Text',
+    })
   }
   if (domain === 'crm' && entity === 'contact') {
     switch (op) {

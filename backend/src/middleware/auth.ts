@@ -12,6 +12,14 @@ export async function requireAuth(req: AuthenticatedRequest, res: Response, next
     const token = Array.isArray(hdr) ? hdr[0] : hdr
     const accessToken = token?.startsWith('Bearer ') ? token.substring(7) : ''
     if (!accessToken) return res.status(401).json({ error: 'unauthorized' })
+
+    // Optional dev escape hatch: allow mock UI tokens without Supabase
+    if (process.env.ALLOW_MOCK_AUTH === 'true') {
+      if (accessToken === 'mock-jwt-token') {
+        req.authUser = { id: 'mock-user', email: 'mock@local' }
+        return next()
+      }
+    }
     const supabase = getSupabase()!
     const { data, error } = await supabase.auth.getUser(accessToken)
     if (error || !data?.user) return res.status(401).json({ error: 'unauthorized' })
