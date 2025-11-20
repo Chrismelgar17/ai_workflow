@@ -1,3 +1,4 @@
+import 'dotenv/config'
 import express from 'express'
 import cors from 'cors'
 import morgan from 'morgan'
@@ -68,7 +69,37 @@ const openapi: any = {
     ,'/api/integrations/twilio/connection/{connectionId}': { get: { summary: 'Get Twilio Nango connection', parameters: [{ name: 'connectionId', in: 'path' }], responses: { '200': { description: 'ok' } } } }
   ,'/api/integrations/twilio/ensure-nango-connection': { post: { summary: 'Ensure Twilio connection in Nango from env', responses: { '200': { description: 'ok' } } } }
   ,'/api/integrations/email/ensure-nango-sendgrid': { post: { summary: 'Ensure SendGrid email connection in Nango from env', responses: { '200': { description: 'ok' } } } }
+  ,'/api/integrations/whatsapp/ensure-nango-connection': { post: { summary: 'Ensure WhatsApp Cloud connection in Nango from env', responses: { '200': { description: 'ok' } } } }
+  ,'/api/llm/complete': { post: { summary: 'LLM text completion', responses: { '200': { description: 'ok' } } } }
+  ,'/api/llm/stream': { get: { summary: 'LLM streaming completion (SSE)', responses: { '200': { description: 'ok' } } } }
   }
+}
+
+// Simple in-memory rate limiter for LLM endpoints
+type RateState = { count: number; resetAt: number }
+const LLM_RATE_LIMIT_PER_MINUTE = Number(process.env.LLM_RATE_LIMIT_PER_MINUTE || 60)
+const llmRateMap = new Map<string, RateState>()
+function clientIp(req: any) {
+  const fwd = (req.headers['x-forwarded-for'] as string) || ''
+  const first = fwd.split(',')[0].trim()
+  return first || req.ip || req.socket?.remoteAddress || 'unknown'
+}
+function llmRateLimit(req: any, res: any, next: any) {
+  if (!LLM_RATE_LIMIT_PER_MINUTE || LLM_RATE_LIMIT_PER_MINUTE <= 0) return next()
+  const key = clientIp(req)
+  const now = Date.now()
+  let state = llmRateMap.get(key)
+  if (!state || now > state.resetAt) {
+    state = { count: 0, resetAt: now + 60_000 }
+    llmRateMap.set(key, state)
+  }
+  state.count++
+  if (state.count > LLM_RATE_LIMIT_PER_MINUTE) {
+    const retryAfter = Math.max(0, Math.ceil((state.resetAt - now) / 1000))
+    res.setHeader('Retry-After', String(retryAfter))
+    return res.status(429).json({ error: 'rate_limited', retry_after_seconds: retryAfter })
+  }
+  next()
 }
 
 app.get('/api/openapi.json', (_req, res) => res.json(openapi))
@@ -691,6 +722,7 @@ app.get('/api/analytics/overview', async (_req, res) => {
 // Unified integration action endpoint: routes actions to Nango or Panora based on request body
 import { unifiedAction } from './integrations/unified.js'
 import { NangoClient } from './integrations/nangoClient.js'
+import { runCompletion, streamCompletion } from './integrations/llm.js'
 import fs from 'fs'
 import path from 'path'
 app.post('/api/integrations/unified', requireAuth, async (req, res) => {
@@ -944,6 +976,122 @@ app.post('/api/integrations/email/ensure-nango-sendgrid', requireAuth, async (_r
     let detail: any = undefined
     try { detail = e?.response?.data } catch {}
     res.status(status).json({ error: e?.message || 'failed to ensure SendGrid connection', detail })
+  }
+})
+// Ensure WhatsApp Cloud connection using API token (import into Nango)
+// Requires: NANGO_WHATSAPP_PROVIDER_CONFIG_KEY, NANGO_WHATSAPP_CONNECTION_ID, WHATSAPP_ACCESS_TOKEN
+app.post('/api/integrations/whatsapp/ensure-nango-connection', requireAuth, async (_req, res) => {
+  try {
+    const provider_config_key = process.env.NANGO_WHATSAPP_PROVIDER_CONFIG_KEY || process.env.WHATSAPP_PROVIDER_CONFIG_KEY
+    const connection_id = process.env.NANGO_WHATSAPP_CONNECTION_ID || process.env.WHATSAPP_CONNECTION_ID
+    const access_token = process.env.WHATSAPP_ACCESS_TOKEN || process.env.WHATSAPP_API_TOKEN
+    if (!provider_config_key || !connection_id || !access_token) {
+      return res.status(400).json({ error: 'Missing one or more env vars: NANGO_WHATSAPP_PROVIDER_CONFIG_KEY, NANGO_WHATSAPP_CONNECTION_ID, WHATSAPP_ACCESS_TOKEN' })
+    }
+    const client = new NangoClient()
+    const body = {
+      provider_config_key,
+      connection_id,
+      credentials: {
+        type: 'API_KEY',
+        apiKey: access_token,
+      }
+    }
+    const data = await client.importConnection(body)
+    res.json(data)
+  } catch (e: any) {
+    const status = e?.status || e?.response?.status || 500
+    let detail: any = undefined
+    try { detail = e?.response?.data } catch {}
+    res.status(status).json({ error: e?.message || 'failed to ensure WhatsApp connection', detail })
+  }
+})
+// LLM completion endpoint
+// Apply limiter to LLM endpoints
+app.use('/api/llm', llmRateLimit)
+
+app.post('/api/llm/complete', requireAuth, async (req, res) => {
+  try {
+    const body = req.body || {}
+    if (!body.prompt) return res.status(400).json({ error: 'prompt required' })
+    const result = await runCompletion({
+      prompt: body.prompt,
+      model: body.model,
+      temperature: body.temperature,
+      maxTokens: body.maxTokens,
+      system: body.system,
+      provider: body.provider,
+      useCache: body.useCache === undefined ? (String(process.env.LLM_CACHE_ENABLED || 'false').toLowerCase() === 'true') : Boolean(body.useCache),
+    })
+    try {
+      const logDir = path.join(process.cwd(), 'backend', 'logs')
+      if (!fs.existsSync(logDir)) fs.mkdirSync(logDir, { recursive: true })
+      const line = JSON.stringify({
+        ts: new Date().toISOString(),
+        type: 'llm.complete',
+        ip: (req.headers['x-forwarded-for'] as string) || req.ip,
+        provider: body.provider || 'openai',
+        model: body.model || process.env.OPENAI_DEFAULT_MODEL || 'gpt-4o-mini',
+        temperature: body.temperature,
+        maxTokens: body.maxTokens,
+        prompt_len: String(body.prompt || '').length,
+        content_len: String(result?.content || '').length,
+        used_cache: body.useCache,
+      }) + '\n'
+      fs.appendFileSync(path.join(logDir, 'llm.log'), line)
+    } catch {}
+    res.json(result)
+  } catch (e: any) {
+    const msg = e?.message || 'llm error'
+    res.status(500).json({ error: msg })
+  }
+})
+
+// LLM streaming endpoint (Server-Sent Events)
+app.get('/api/llm/stream', requireAuth, async (req, res) => {
+  try {
+    const prompt = (req.query.prompt as string) || ''
+    if (!prompt) return res.status(400).json({ error: 'prompt query param required' })
+    const model = (req.query.model as string) || undefined
+    const temperature = req.query.temperature ? Number(req.query.temperature) : undefined
+    const maxTokens = req.query.maxTokens ? Number(req.query.maxTokens) : undefined
+    const system = (req.query.system as string) || undefined
+    const provider = (req.query.provider as string) || undefined
+
+    res.setHeader('Content-Type', 'text/event-stream')
+    res.setHeader('Cache-Control', 'no-cache')
+    res.setHeader('Connection', 'keep-alive')
+
+    let buffer = ''
+    let chunks = 0
+    await streamCompletion({ prompt, model, temperature, maxTokens, system, provider }, (chunk) => {
+      buffer += chunk
+      chunks += 1
+      res.write(`data: ${JSON.stringify({ delta: chunk })}\n\n`)
+    })
+    res.write(`data: ${JSON.stringify({ done: true, content: buffer })}\n\n`)
+    try {
+      const logDir = path.join(process.cwd(), 'backend', 'logs')
+      if (!fs.existsSync(logDir)) fs.mkdirSync(logDir, { recursive: true })
+      const line = JSON.stringify({
+        ts: new Date().toISOString(),
+        type: 'llm.stream',
+        ip: (req.headers['x-forwarded-for'] as string) || req.ip,
+        provider: provider || 'openai',
+        model: model || process.env.OPENAI_DEFAULT_MODEL || 'gpt-4o-mini',
+        temperature,
+        maxTokens,
+        prompt_len: prompt.length,
+        content_len: buffer.length,
+        chunks,
+      }) + '\n'
+      fs.appendFileSync(path.join(logDir, 'llm.log'), line)
+    } catch {}
+    res.end()
+  } catch (e: any) {
+    const msg = e?.message || 'stream error'
+    try { res.write(`data: ${JSON.stringify({ error: msg })}\n\n`) } catch {}
+    res.end()
   }
 })
 app.post('/api/oauth2/token', (_req, res) => {

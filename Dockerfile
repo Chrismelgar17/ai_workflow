@@ -1,13 +1,21 @@
-FROM node:20-alpine AS base
+FROM node:20-bookworm-slim AS base
 
 # Install dependencies only when needed
 FROM base AS deps
-RUN apk add --no-cache libc6-compat
 WORKDIR /app
+# Install CA certs (already present in bullseye-slim but ensure updated) and curl for potential health checks
+RUN rm -rf /var/lib/apt/lists/* \
+	&& apt-get update \
+	&& apt-get install -y --no-install-recommends ca-certificates curl \
+	&& apt-get clean \
+	&& rm -rf /var/lib/apt/lists/* \
+	&& update-ca-certificates
+
+## Use npm bundled with Node image to avoid global upgrade issues
 
 # Install dependencies
 COPY package.json package-lock.json* ./
-RUN npm ci
+RUN npm ci --prefer-offline --no-audit
 
 # Rebuild the source code only when needed
 FROM base AS builder
@@ -30,7 +38,11 @@ ENV NODE_ENV production
 ENV NEXT_TELEMETRY_DISABLED 1
 
 # Install curl for health checks
-RUN apk add --no-cache curl
+RUN rm -rf /var/lib/apt/lists/* \
+	&& apt-get update \
+	&& apt-get install -y --no-install-recommends curl \
+	&& apt-get clean \
+	&& rm -rf /var/lib/apt/lists/*
 
 RUN addgroup --system --gid 1001 nodejs
 RUN adduser --system --uid 1001 nextjs

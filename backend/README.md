@@ -178,3 +178,23 @@ SUPABASE_SERVICE_ROLE_KEY=eyJhbGciOi...
 ```
 
 Then start the stack normally. The `api` service will detect Supabase and use it for the Users CRUD.
+
+## LLM Integration (OpenAI)
+
+The backend exposes two endpoints when `OPENAI_API_KEY` is set:
+
+- `POST /api/llm/complete`: JSON body with `prompt` (required), optional `model`, `temperature`, `maxTokens`, `system`, `provider` (default `openai`), and `useCache` (bool). Returns `{ content, model, created, usage }`.
+- `GET /api/llm/stream`: Query params `prompt` (required), optional `model`, `temperature`, `maxTokens`, `system`, `provider`. Streams SSE events with `{ delta }` chunks and a final `{ done, content }`.
+
+Environment variables:
+- `OPENAI_API_KEY` (required)
+- `OPENAI_DEFAULT_MODEL` (optional, e.g. `gpt-4o-mini`)
+- `OPENAI_SYSTEM_PROMPT` (optional)
+- `LLM_RATE_LIMIT_PER_MINUTE` (optional, default 60 per IP)
+- `LLM_CACHE_ENABLED` (optional, `true|false`) to enable in-memory cache for non-streaming completes
+- `LLM_BANNED_TERMS` (optional, comma-separated keywords to block in prompts)
+
+Notes:
+- Requests are per-IP rate limited on `/api/llm/*` using an in-memory counter.
+- Basic moderation checks prompt for banned keywords and size.
+- Logs for both endpoints are appended to `backend/logs/llm.log` (create automatically). The log includes metadata (lengths, not raw secrets).

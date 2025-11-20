@@ -1,6 +1,9 @@
 import axios, { AxiosInstance, AxiosRequestConfig } from 'axios';
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:5000';
+// Use same-origin base URL so Next.js rewrites can proxy /api/* to the backend
+// This avoids browser CORS by letting Vercel/Next act as the reverse proxy.
+// NEXT_PUBLIC_API_URL is still used by next.config.js rewrites server-side.
+const API_URL = '';
 const DEMO_MODE = (process.env.NEXT_PUBLIC_DEMO_MODE || 'false').toLowerCase() === 'true';
 // Allow runtime override without rebuild: set localStorage.DEMO_MODE = 'true'
 // Prefer env var NEXT_PUBLIC_DEMO_MODE; runtime localStorage overrides if set
@@ -274,6 +277,69 @@ class ApiClient {
   async getAuditLog(params?: { limit?: number; offset?: number }) {
     const response = await this.client.get('/api/audit', { params });
     return response.data;
+  }
+
+  // LLM Completion (non-streaming)
+  async llmComplete(body: { prompt: string; model?: string; temperature?: number; maxTokens?: number; system?: string; provider?: string; useCache?: boolean }) {
+    const response = await this.client.post('/api/llm/complete', body);
+    return response.data as { content: string; model: string; created: number; usage?: any };
+  }
+
+  // LLM Stream: returns full content after stream ends; accepts onDelta callback for incremental updates.
+  async llmStream(params: { prompt: string; model?: string; temperature?: number; maxTokens?: number; system?: string; provider?: string }, onDelta: (delta: string) => void, signal?: AbortSignal): Promise<{ content: string }> {
+    const q = new URLSearchParams();
+    q.set('prompt', params.prompt);
+    if (params.model) q.set('model', params.model);
+    if (params.temperature !== undefined) q.set('temperature', String(params.temperature));
+    if (params.maxTokens !== undefined) q.set('maxTokens', String(params.maxTokens));
+    if (params.system) q.set('system', params.system);
+    if (params.provider) q.set('provider', params.provider);
+    const token = (typeof window !== 'undefined') ? localStorage.getItem('auth_token') : null;
+    const res = await fetch(`/api/llm/stream?${q.toString()}`, {
+      method: 'GET',
+      headers: {
+        'Accept': 'text/event-stream',
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+      signal,
+    });
+    if (!res.ok || !res.body) {
+      throw new Error(`Stream request failed: ${res.status}`);
+    }
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    let full = '';
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const parts = buffer.split('\n\n');
+      // Keep last partial piece in buffer
+      buffer = parts.pop() || '';
+      for (const chunk of parts) {
+        const line = chunk.trim();
+        if (!line.startsWith('data:')) continue;
+        const jsonStr = line.substring(5).trim();
+        if (!jsonStr) continue;
+        try {
+          const payload = JSON.parse(jsonStr);
+          if (payload.delta) {
+            onDelta(payload.delta);
+            full += payload.delta;
+          }
+          if (payload.done && payload.content) {
+            full = payload.content;
+          }
+          if (payload.error) {
+            throw new Error(payload.error);
+          }
+        } catch (e) {
+          // swallow parse errors
+        }
+      }
+    }
+    return { content: full };
   }
 
   // Users (always call backend regardless of demo mode)

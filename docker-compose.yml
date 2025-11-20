@@ -10,6 +10,10 @@ services:
       - PORT=5000
       - ALLOW_MOCK_AUTH=true
       - PUBLIC_PORTAL_URL=${PUBLIC_PORTAL_URL:-http://localhost:3002}
+      # LLM / OpenAI configuration (ensure OPENAI_API_KEY is set in your .env file)
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - OPENAI_DEFAULT_MODEL=${OPENAI_DEFAULT_MODEL:-gpt-4o-mini}
+      - LLM_CACHE_ENABLED=${LLM_CACHE_ENABLED:-false}
       - SUPABASE_URL=${SUPABASE_URL}
       - SUPABASE_SERVICE_ROLE_KEY=${SUPABASE_SERVICE_ROLE_KEY}
       - NANGO_HOST=${NANGO_HOST}
@@ -76,7 +80,7 @@ services:
       - WATCHPACK_POLLING=true
       - CHOKIDAR_USEPOLLING=true
       - NEXT_WEBPACK_USEPOLLING=1
-      - NEXT_PUBLIC_API_URL=http://localhost:5000
+      - NEXT_PUBLIC_API_URL=http://api:5000
       - NEXT_PUBLIC_DEMO_MODE=false
       - NEXT_PUBLIC_APP_NAME=AI Workflow Portal
       - NEXT_PUBLIC_APP_VERSION=3.0.0

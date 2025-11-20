@@ -8,6 +8,9 @@ const inter = Inter({ subsets: ['latin'] })
 export const metadata: Metadata = {
   title: process.env.NEXT_PUBLIC_APP_NAME || 'AI Workflow Portal',
   description: 'Easy-Button Portal UI for AI Workflow Infrastructure',
+  icons: {
+    icon: '/favicon.svg',
+  },
 }
 
 export default function RootLayout({

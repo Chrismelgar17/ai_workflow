@@ -12,8 +12,8 @@
     "user:create": "tsx src/scripts/create_user.ts",
     "whatsapp:test": "tsx src/scripts/whatsapp_test.ts",
     "nango:connections": "tsx src/scripts/nango_connections.ts",
-    "nango:import": "tsx src/scripts/nango_import_connection.ts"
-    ,"twilio:test": "tsx src/scripts/twilio_test.ts",
+    "nango:import": "tsx src/scripts/nango_import_connection.ts",
+    "twilio:test": "tsx src/scripts/twilio_test.ts",
     "gcal:test": "tsx src/scripts/gcal_test.ts"
   },
   "dependencies": {
@@ -23,6 +23,7 @@
     "dotenv": "^16.6.1",
     "express": "^4.19.2",
     "morgan": "^1.10.0",
+    "openai": "^4.104.0",
     "swagger-ui-express": "^5.0.1",
     "uuid": "^9.0.1"
   },

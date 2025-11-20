@@ -6,7 +6,7 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Card } from "@/components/ui/card"
 import { Badge } from "@/components/ui/label-badge"
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
+// Removed Select components in favor of button groups for Service & Event
 import { Textarea } from "@/components/ui/textarea"
 import {
   ArrowLeft,
@@ -113,6 +113,32 @@ export function WorkflowCanvas({ workflowId, onBack }: WorkflowCanvasProps) {
     notification: "Send Push Notification",
     scheduler: "Schedule Task",
     api: "Call API Endpoint",
+  }
+
+  // Actions per service for the Event buttons
+  const actionsForService = (svc: string): string[] => {
+    switch (svc) {
+      case "webhook":
+        return ["Form Submission Created", "HTTP Request Received", "Webhook Triggered"]
+      case "email":
+        return ["Send Email", "Send Template Email", "Email Received"]
+      case "database":
+        return ["Create Record", "Update Record", "Find Records"]
+      case "messaging":
+        return ["Send Message", "Create Channel", "Post Update"]
+      case "payment":
+        return ["Create Payment", "Create Customer", "Process Refund"]
+      case "document":
+        return ["Generate PDF", "Parse Document", "Convert Format"]
+      case "notification":
+        return ["Send Push Notification", "Send SMS", "Send Alert"]
+      case "scheduler":
+        return ["Schedule Task", "Delay Execution", "Every Hour"]
+      case "api":
+        return ["Call API Endpoint", "Transform Data", "Validate Response"]
+      default:
+        return []
+    }
   }
 
   const addStepAt = (afterStepId: string | null) => {
@@ -588,109 +614,55 @@ export function WorkflowCanvas({ workflowId, onBack }: WorkflowCanvasProps) {
                   <div className="space-y-4">
                     <div className="space-y-2">
                       <Label>Service</Label>
-                      <Select
-                        value={selectedStepData.service}
-                        onValueChange={(value: string) => {
-                          updateStep(selectedStepData.id, {
-                            service: value,
-                            action: defaultActionForService[value] || "",
-                            status: value ? "configured" : "incomplete",
-                          })
-                        }}
-                      >
-                        <SelectTrigger>
-                          <SelectValue placeholder="Choose service..." />
-                        </SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value="webhook">HTTP Webhook</SelectItem>
-                          <SelectItem value="email">Email Service</SelectItem>
-                          <SelectItem value="database">Database</SelectItem>
-                          <SelectItem value="messaging">Messaging Service</SelectItem>
-                          <SelectItem value="payment">Payment Service</SelectItem>
-                          <SelectItem value="document">Document Service</SelectItem>
-                          <SelectItem value="notification">Notification Service</SelectItem>
-                          <SelectItem value="scheduler">Scheduler</SelectItem>
-                          <SelectItem value="api">API Service</SelectItem>
-                        </SelectContent>
-                      </Select>
+                      {/* Button group replacing the Select */}
+                      <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+                        {[
+                          { value: "webhook", label: "HTTP Webhook" },
+                          { value: "email", label: "Email Service" },
+                          { value: "database", label: "Database" },
+                          { value: "messaging", label: "Messaging Service" },
+                          { value: "payment", label: "Payment Service" },
+                          { value: "document", label: "Document Service" },
+                          { value: "notification", label: "Notification" },
+                          { value: "scheduler", label: "Scheduler" },
+                          { value: "api", label: "API Service" },
+                        ].map((opt) => (
+                          <Button
+                            key={opt.value}
+                            variant={selectedStepData.service === opt.value ? "default" : "outline"}
+                            size="sm"
+                            className="justify-start"
+                            onClick={() =>
+                              updateStep(selectedStepData.id, {
+                                service: opt.value,
+                                action: defaultActionForService[opt.value] || "",
+                                status: opt.value ? "configured" : "incomplete",
+                              })
+                            }
+                          >
+                            <span className="truncate">{opt.label}</span>
+                          </Button>
+                        ))}
+                      </div>
                     </div>
 
                     {selectedStepData.service && (
                       <div className="space-y-2">
                         <Label>Event</Label>
-                        <Select
-                          value={selectedStepData.action}
-                          onValueChange={(value: string) => updateStep(selectedStepData.id, { action: value })}
-                        >
-                          <SelectTrigger>
-                            <SelectValue placeholder="Select event..." />
-                          </SelectTrigger>
-                          <SelectContent>
-                            {selectedStepData.service === "webhook" && (
-                              <>
-                                <SelectItem value="Form Submission Created">Form Submission Created</SelectItem>
-                                <SelectItem value="HTTP Request Received">HTTP Request Received</SelectItem>
-                                <SelectItem value="Webhook Triggered">Webhook Triggered</SelectItem>
-                              </>
-                            )}
-                            {selectedStepData.service === "email" && (
-                              <>
-                                <SelectItem value="Send Email">Send Email</SelectItem>
-                                <SelectItem value="Send Template Email">Send Template Email</SelectItem>
-                                <SelectItem value="Email Received">Email Received</SelectItem>
-                              </>
-                            )}
-                            {selectedStepData.service === "database" && (
-                              <>
-                                <SelectItem value="Create Record">Create Record</SelectItem>
-                                <SelectItem value="Update Record">Update Record</SelectItem>
-                                <SelectItem value="Find Records">Find Records</SelectItem>
-                              </>
-                            )}
-                            {selectedStepData.service === "messaging" && (
-                              <>
-                                <SelectItem value="Send Message">Send Message</SelectItem>
-                                <SelectItem value="Create Channel">Create Channel</SelectItem>
-                                <SelectItem value="Post Update">Post Update</SelectItem>
-                              </>
-                            )}
-                            {selectedStepData.service === "payment" && (
-                              <>
-                                <SelectItem value="Create Payment">Create Payment</SelectItem>
-                                <SelectItem value="Create Customer">Create Customer</SelectItem>
-                                <SelectItem value="Process Refund">Process Refund</SelectItem>
-                              </>
-                            )}
-                            {selectedStepData.service === "document" && (
-                              <>
-                                <SelectItem value="Generate PDF">Generate PDF</SelectItem>
-                                <SelectItem value="Parse Document">Parse Document</SelectItem>
-                                <SelectItem value="Convert Format">Convert Format</SelectItem>
-                              </>
-                            )}
-                            {selectedStepData.service === "notification" && (
-                              <>
-                                <SelectItem value="Send Push Notification">Send Push Notification</SelectItem>
-                                <SelectItem value="Send SMS">Send SMS</SelectItem>
-                                <SelectItem value="Send Alert">Send Alert</SelectItem>
-                              </>
-                            )}
-                            {selectedStepData.service === "scheduler" && (
-                              <>
-                                <SelectItem value="Schedule Task">Schedule Task</SelectItem>
-                                <SelectItem value="Delay Execution">Delay Execution</SelectItem>
-                                <SelectItem value="Every Hour">Every Hour</SelectItem>
-                              </>
-                            )}
-                            {selectedStepData.service === "api" && (
-                              <>
-                                <SelectItem value="Call API Endpoint">Call API Endpoint</SelectItem>
-                                <SelectItem value="Transform Data">Transform Data</SelectItem>
-                                <SelectItem value="Validate Response">Validate Response</SelectItem>
-                              </>
-                            )}
-                          </SelectContent>
-                        </Select>
+                        {/* Button group replacing the Select */}
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                          {actionsForService(selectedStepData.service).map((act) => (
+                            <Button
+                              key={act}
+                              variant={selectedStepData.action === act ? "default" : "outline"}
+                              size="sm"
+                              className="justify-start"
+                              onClick={() => updateStep(selectedStepData.id, { action: act })}
+                            >
+                              {act}
+                            </Button>
+                          ))}
+                        </div>
                       </div>
                     )}
 
