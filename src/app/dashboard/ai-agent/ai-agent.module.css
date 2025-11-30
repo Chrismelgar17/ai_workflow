@@ -1,0 +1,96 @@
+/* Minimalist, geometric AI Agent detail styles
+   - Uses global CSS variables for colors & radius
+   - Clean cards, soft shadows, clear hierarchy
+*/
+.pageRoot {
+  padding: 1.25rem;
+}
+
+.headerRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-bottom: 0.75rem;
+}
+
+.titleBlock h1 {
+  font-size: 1.125rem;
+  margin: 0;
+  font-weight: 600;
+}
+.titleBlock p { margin: 0; color: var(--muted-foreground); font-size: 0.875rem }
+
+.controls {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+}
+
+.gridMain {
+  display: grid;
+  grid-template-columns: 1fr 360px 220px;
+  gap: 1rem;
+}
+
+.card {
+  background: var(--card);
+  border-radius: var(--radius-md);
+  padding: 0.75rem;
+  box-shadow: 0 8px 20px rgba(17,17,17,0.04);
+  border: 1px solid rgba(22,24,27,0.04);
+}
+
+.promptBox {
+  position: relative;
+  min-height: 340px;
+  display: flex;
+  flex-direction: column;
+}
+.promptArea {
+  flex: 1 1 auto;
+  width: 100%;
+  border-radius: calc(var(--radius-md) - 4px);
+  padding: 0.8rem;
+  font-family: var(--font-mono);
+  font-size: 0.95rem;
+  resize: none;
+  border: 1px solid rgba(22,24,27,0.04);
+  background: rgba(245,245,244,0.6);
+  color: var(--card-foreground);
+}
+
+.saveButton {
+  position: absolute;
+  right: 0.8rem;
+  bottom: 0.8rem;
+  background: var(--primary);
+  color: var(--primary-foreground);
+  border-radius: 0.6rem;
+  padding: 0.45rem 0.7rem;
+  font-weight: 600;
+  box-shadow: 0 6px 16px rgba(28,25,23,0.06);
+}
+
+.metaRow {
+  display: flex;
+  gap: 0.5rem;
+  margin-top: 0.75rem;
+  align-items: center;
+}
+.metaItem { display:flex; gap:0.5rem; align-items:center }
+.avatar { width:34px; height:34px; border-radius:8px; overflow:hidden; display:inline-flex; align-items:center; justify-content:center; background:var(--secondary); }
+
+.accordion { display:flex; flex-direction:column; gap:0.5rem }
+.accordionItem { border-radius: 0.6rem; padding: 0.6rem; background: rgba(245,245,244,0.4); border: 1px solid rgba(22,24,27,0.03); }
+.accordionHeader { font-weight:600; font-size:0.95rem; display:flex; justify-content:space-between; align-items:center }
+.accordionContent { margin-top:0.5rem; font-size:0.9rem; color:var(--muted-foreground) }
+
+.testPanel { display:flex; flex-direction:column; align-items:center; gap:1rem; padding-top:1.5rem }
+.micCircle { width:84px; height:84px; border-radius:9999px; display:flex; align-items:center; justify-content:center; background: linear-gradient(180deg, rgba(245,245,244,0.9), rgba(240,240,239,0.8)); border:1px solid rgba(22,24,27,0.04); }
+.startBtn { background: var(--primary); color: var(--primary-foreground); padding:0.5rem 0.9rem; border-radius:0.6rem; font-weight:600 }
+
+@media (max-width: 1024px) {
+  .gridMain { grid-template-columns: 1fr 300px; }
+  .testPanel { display:none }
+}

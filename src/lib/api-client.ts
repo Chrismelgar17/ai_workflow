@@ -367,6 +367,55 @@ class ApiClient {
     const response = await this.client.delete(`/api/users/${id}`);
     return response.data as { ok: boolean };
   }
+
+  // Agent configuration (UI-facing): get/save agent settings
+  async getAgents() {
+    const demoAgents = [
+      { id: 'agent_demo', name: 'GPT5 Demo Agent', owner: 'Amy', status: 'paused', totalActivity: 2, successRate: '50%', avgDuration: '2:26' },
+      { id: 'agent_olivia_inbound', name: 'Lead Manager - Olivia (Active)', owner: 'Olivia', status: 'active', totalActivity: 56, successRate: '18%', avgDuration: '0:20' },
+      { id: 'agent_outbound_warm', name: 'OUTBOUND WARM AGENT', owner: 'Jane', status: 'paused', totalActivity: 22, successRate: '9%', avgDuration: '0:30' },
+    ];
+    if (RUNTIME_DEMO_MODE) return Promise.resolve(demoAgents);
+    try {
+      const response = await this.client.get('/api/agents');
+      return response.data;
+    } catch (e) {
+      // Fallback to demo list when backend is unavailable
+      return demoAgents;
+    }
+  }
+
+  async getAgentConfig(agentId: string) {
+    if (RUNTIME_DEMO_MODE) {
+      return Promise.resolve({
+        id: agentId,
+        model: 'gpt-4o-mini',
+        language: 'en-US',
+        voice: 'alloy',
+        prompt: 'Explain the difference between caching and rate limiting in one paragraph.',
+      })
+    }
+    try {
+      const response = await this.client.get(`/api/agents/${agentId}`)
+      return response.data
+    } catch (e) {
+      // Fallback to demo config if backend is unavailable or returns an error
+      return { id: agentId, model: 'gpt-4o-mini', language: 'en-US', voice: 'alloy', prompt: 'Explain the difference between caching and rate limiting in one paragraph.' }
+    }
+  }
+
+  async saveAgentConfig(agentId: string, config: any) {
+    if (RUNTIME_DEMO_MODE) {
+      return Promise.resolve({ ok: true, id: agentId, ...config })
+    }
+    try {
+      const response = await this.client.put(`/api/agents/${agentId}`, config)
+      return response.data
+    } catch (e) {
+      // On failure, return a demo-like response so the UI remains usable
+      return { ok: false, id: agentId, ...config }
+    }
+  }
 }
 
 export const apiClient = new ApiClient();

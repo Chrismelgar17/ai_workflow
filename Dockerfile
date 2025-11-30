@@ -16,6 +16,8 @@ RUN rm -rf /var/lib/apt/lists/* \
 # Install dependencies
 COPY package.json package-lock.json* ./
 RUN npm ci --prefer-offline --no-audit
+# Proactively ensure SWC native binary exists in the layer to avoid remote download during next build
+RUN npm install --no-audit --no-fund @next/swc-linux-x64-gnu@14.2.33 || true
 
 # Rebuild the source code only when needed
 FROM base AS builder
@@ -37,12 +39,17 @@ WORKDIR /app
 ENV NODE_ENV production
 ENV NEXT_TELEMETRY_DISABLED 1
 
-# Install curl for health checks
-RUN rm -rf /var/lib/apt/lists/* \
-	&& apt-get update \
-	&& apt-get install -y --no-install-recommends curl \
-	&& apt-get clean \
-	&& rm -rf /var/lib/apt/lists/*
+# Install curl for health checks (robust against mirror/hash issues)
+RUN set -eux; \
+		rm -rf /var/lib/apt/lists/*; \
+		for i in 1 2 3 4 5; do \
+			apt-get update -o Acquire::Retries=3 -o Acquire::CompressionTypes::Order::=gz -o Acquire::http::No-Cache=true -o Acquire::Check-Valid-Until=false && \
+			apt-get install -y --no-install-recommends curl ca-certificates && break || \
+			(echo "apt failed on attempt $i, retrying..."; rm -rf /var/lib/apt/lists/*; sleep 3); \
+		done; \
+		apt-get clean; \
+		rm -rf /var/lib/apt/lists/*; \
+		update-ca-certificates
 
 RUN addgroup --system --gid 1001 nodejs
 RUN adduser --system --uid 1001 nextjs
@@ -51,6 +58,8 @@ RUN adduser --system --uid 1001 nextjs
 COPY --from=builder /app/public ./public
 COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./
 COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static
+# Include server directory for vendor chunks (e.g. @tanstack) not present in standalone root
+COPY --from=builder --chown=nextjs:nodejs /app/.next/server ./.next/server
 
 USER nextjs
 
@@ -62,7 +71,7 @@ ENV HOSTNAME "0.0.0.0"
 CMD ["node", "server.js"]
 
 # ----------- Dev stage (for hot reload in Docker) -----------
-FROM node:20-alpine AS dev
+FROM base AS dev
 WORKDIR /app
 ENV NODE_ENV development
 ENV NEXT_TELEMETRY_DISABLED 1
@@ -70,9 +79,11 @@ ENV NEXT_TELEMETRY_DISABLED 1
 ENV WATCHPACK_POLLING true
 ENV CHOKIDAR_USEPOLLING true
 
-# Reuse production deps to avoid network/proxy issues during dev stage build
-COPY --from=deps /app/node_modules ./node_modules
+# Reuse production deps (already includes @next/swc-linux-x64-gnu) for consistent SWC
 COPY package.json package-lock.json* ./
+# Fresh install on Linux to pick up correct optional SWC binary (lock file built on Windows omits linux targets)
+RUN npm install --no-audit --no-fund
+RUN npm install --no-audit --no-fund @next/swc-wasm-nodejs@14.2.33 || true
 COPY . .
 
 EXPOSE 3002

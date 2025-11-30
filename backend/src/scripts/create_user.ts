@@ -1,3 +1,4 @@
+import 'dotenv/config';
 import { getSupabase } from '../db/supabase.js'
 
 async function main() {

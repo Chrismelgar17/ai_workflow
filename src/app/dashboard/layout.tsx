@@ -20,6 +20,8 @@ import {
   X,
   Bell,
   User
+  ,
+  Cpu
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useState } from 'react'
@@ -27,6 +29,7 @@ import { useState } from 'react'
 const navigation = [
   { name: 'Dashboard', href: '/dashboard', icon: LayoutDashboard },
   { name: 'Templates', href: '/dashboard/templates', icon: FileText },
+  { name: 'AI Agent', href: '/dashboard/ai-agent', icon: Cpu },
   { name: 'Workflows', href: '/dashboard/workflows', icon: Workflow },
   { name: 'Connections', href: '/dashboard/connections', icon: Plug },
   { name: 'Inbox', href: '/dashboard/inbox', icon: Inbox },

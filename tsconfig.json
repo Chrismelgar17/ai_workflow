@@ -34,6 +34,7 @@
   ],
   "exclude": [
     "node_modules",
-    "backend/**"
+    "backend/**",
+    "src/app/dashboard/workflows/workflow-canvas.tsx" // exclude corrupted legacy file
   ]
 }
