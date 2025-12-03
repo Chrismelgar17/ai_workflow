@@ -198,3 +198,28 @@ Notes:
 - Requests are per-IP rate limited on `/api/llm/*` using an in-memory counter.
 - Basic moderation checks prompt for banned keywords and size.
 - Logs for both endpoints are appended to `backend/logs/llm.log` (create automatically). The log includes metadata (lengths, not raw secrets).
+
+## Retell Integration (Voice Agents)
+
+A lightweight Retell integration wrapper is available at `src/integrations/retell.ts`.
+
+Environment variables:
+
+```
+RETELL_API_KEY=<your_retell_api_key>
+RETELL_BASE_URL=https://api.retell.ai
+```
+
+Basic usage:
+
+```ts
+import { RetellService } from './src/integrations/retell'
+
+const retell = new RetellService({ apiKey: process.env.RETELL_API_KEY!, baseUrl: process.env.RETELL_BASE_URL })
+const agents = await retell.listAgents()
+const call = await retell.createPhoneCall({ agentId: agents[0].id, toPhoneNumber: '+15555550123' })
+```
+
+Notes:
+- This wrapper uses `fetch` and avoids additional SDK installs. You can swap to the official SDK later.
+- Endpoints (`/v1/agents`, `/v1/calls/phone`, `/v1/calls/web`) may vary; adjust per your Retell account documentation.
