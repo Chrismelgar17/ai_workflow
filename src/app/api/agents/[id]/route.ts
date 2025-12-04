@@ -1,4 +1,5 @@
 import { NextResponse } from 'next/server'
+import { getAgentStore, persistAgentStore } from '@/lib/agents-store'
 
 type Agent = {
   id: string
@@ -10,10 +11,8 @@ type Agent = {
   config?: Record<string, any>
 }
 
-const store: Record<string, Agent> = (global as any).__AGENTS_STORE || {}
-;(global as any).__AGENTS_STORE = store
-
 export async function GET(_request: Request, { params }: { params: { id: string } }) {
+  const store = getAgentStore()
   const agent = store[params.id]
   return NextResponse.json(
     agent || {
@@ -30,6 +29,7 @@ export async function GET(_request: Request, { params }: { params: { id: string 
 
 export async function PUT(request: Request, { params }: { params: { id: string } }) {
   const body = await request.json()
+  const store = getAgentStore()
   const existing = store[params.id]
   const updated: Agent = {
     id: params.id,
@@ -41,5 +41,16 @@ export async function PUT(request: Request, { params }: { params: { id: string }
     config: { ...(existing?.config || {}), ...(body?.config || {}) },
   }
   store[params.id] = updated
+  persistAgentStore()
   return NextResponse.json(updated)
+}
+
+export async function DELETE(_request: Request, { params }: { params: { id: string } }) {
+  const store = getAgentStore()
+  if (store[params.id]) {
+    delete store[params.id]
+    persistAgentStore()
+    return NextResponse.json({ ok: true })
+  }
+  return NextResponse.json({ ok: false }, { status: 404 })
 }

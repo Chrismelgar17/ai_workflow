@@ -1,0 +1,20 @@
+{
+  "miqt9p5l_5gwg": {
+    "id": "miqt9p5l_5gwg",
+    "name": "demo",
+    "model": "gemini-2.5",
+    "provider": "openai",
+    "language": "fr-FR",
+    "prompt": "",
+    "config": {}
+  },
+  "miqtydf8_6anl": {
+    "id": "miqtydf8_6anl",
+    "name": "New Agent",
+    "model": "gpt-4o-mini",
+    "provider": "openai",
+    "language": "en",
+    "prompt": "",
+    "config": {}
+  }
+}

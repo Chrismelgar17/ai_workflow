@@ -65,3 +65,15 @@ create table if not exists audit (
   action text not null,
   at timestamptz not null default now()
 );
+
+-- AI Agents
+create table if not exists agents (
+  id text primary key,
+  name text not null,
+  provider text not null,
+  model text not null,
+  language text,
+  prompt text,
+  config jsonb default '{}' not null,
+  created_at timestamptz default now()
+);

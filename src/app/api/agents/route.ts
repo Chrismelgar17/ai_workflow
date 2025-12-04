@@ -1,20 +1,8 @@
 import { NextResponse } from 'next/server'
-
-type Agent = {
-  id: string
-  name: string
-  model: string
-  provider: string
-  language?: string
-  prompt?: string
-  config?: Record<string, any>
-}
-
-// In-memory store for dev/demo
-const store: Record<string, Agent> = (globalThis as any).__AGENTS_STORE || {}
-;(globalThis as any).__AGENTS_STORE = store
+import { getAgentStore, persistAgentStore } from '@/lib/agents-store'
 
 export async function GET() {
+  const store = getAgentStore()
   const agents = Object.values(store)
   return NextResponse.json(agents)
 }
@@ -31,6 +19,8 @@ export async function POST(request: Request) {
     prompt: body?.prompt || '',
     config: body?.config || {}
   }
+  const store = getAgentStore()
   store[id] = agent
+  persistAgentStore()
   return NextResponse.json(agent, { status: 201 })
 }

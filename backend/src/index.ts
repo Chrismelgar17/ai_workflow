@@ -72,6 +72,15 @@ const openapi: any = {
   ,'/api/integrations/whatsapp/ensure-nango-connection': { post: { summary: 'Ensure WhatsApp Cloud connection in Nango from env', responses: { '200': { description: 'ok' } } } }
   ,'/api/llm/complete': { post: { summary: 'LLM text completion', responses: { '200': { description: 'ok' } } } }
   ,'/api/llm/stream': { get: { summary: 'LLM streaming completion (SSE)', responses: { '200': { description: 'ok' } } } }
+  ,'/api/agents': {
+      get: { summary: 'List agents', responses: { '200': { description: 'ok' } } },
+      post: { summary: 'Create agent', responses: { '201': { description: 'created' } } }
+    }
+  ,'/api/agents/{id}': {
+      get: { summary: 'Get agent', parameters: [{ name: 'id', in: 'path' }], responses: { '200': { description: 'ok' } } },
+      put: { summary: 'Update agent', parameters: [{ name: 'id', in: 'path' }], responses: { '200': { description: 'ok' } } },
+      delete: { summary: 'Delete agent', parameters: [{ name: 'id', in: 'path' }], responses: { '200': { description: 'ok' } } }
+    }
   }
 }
 
@@ -131,6 +140,121 @@ const db = {
 // Health
 app.get('/api/health', (_req, res) => {
   res.json({ status: 'ok', service: 'workflow-backend', time: new Date().toISOString() })
+})
+
+type Agent = {
+  id: string
+  name: string
+  provider: string
+  model: string
+  language?: string
+  prompt?: string
+  config?: Record<string, any>
+  created_at?: string
+}
+
+const agentStore: Record<string, Agent> = {}
+
+function normalizeAgent(row: any): Agent {
+  return {
+    id: row.id,
+    name: row.name,
+    provider: row.provider,
+    model: row.model,
+    language: row.language,
+    prompt: row.prompt,
+    config: row.config ?? {},
+    created_at: row.created_at,
+  }
+}
+
+// Agents
+app.get('/api/agents', async (_req, res) => {
+  if (USE_SUPABASE) {
+    const supabase = getSupabase()!
+    const { data, error } = await supabase.from('agents').select('*').order('created_at', { ascending: false })
+    if (error) return res.status(500).json({ error: error.message })
+    return res.json(data?.map(normalizeAgent) ?? [])
+  }
+  res.json(Object.values(agentStore))
+})
+
+app.get('/api/agents/:id', async (req, res) => {
+  const id = req.params.id
+  if (USE_SUPABASE) {
+    const supabase = getSupabase()!
+    const { data, error } = await supabase.from('agents').select('*').eq('id', id).maybeSingle()
+    if (error) return res.status(500).json({ error: error.message })
+    if (!data) return res.status(404).json({ error: 'not found' })
+    return res.json(normalizeAgent(data))
+  }
+  const agent = agentStore[id]
+  if (!agent) return res.status(404).json({ error: 'not found' })
+  res.json(agent)
+})
+
+app.post('/api/agents', async (req, res) => {
+  const body = req.body || {}
+  const id = body.id || uuid()
+  const payload: Agent = {
+    id,
+    name: body.name || `Agent ${id.slice(0, 4)}`,
+    model: body.model || 'gpt-4o-mini',
+    provider: body.provider || 'openai',
+    language: body.language || 'en-US',
+    prompt: body.prompt || '',
+    config: body.config || {},
+  }
+  if (USE_SUPABASE) {
+    const supabase = getSupabase()!
+    const { data, error } = await supabase.from('agents').insert(payload).select().maybeSingle()
+    if (error) return res.status(500).json({ error: error.message })
+    return res.status(201).json(normalizeAgent(data))
+  }
+  agentStore[id] = payload
+  res.status(201).json(payload)
+})
+
+app.put('/api/agents/:id', async (req, res) => {
+  const id = req.params.id
+  const incoming = req.body || {}
+  if (USE_SUPABASE) {
+    const supabase = getSupabase()!
+    const { data: existing, error: fetchError } = await supabase.from('agents').select('*').eq('id', id).maybeSingle()
+    if (fetchError) return res.status(500).json({ error: fetchError.message })
+    if (!existing) return res.status(404).json({ error: 'not found' })
+    const mergedConfig = { ...(existing.config || {}), ...(incoming.config || {}) }
+    const updates = {
+      ...existing,
+      ...incoming,
+      config: mergedConfig,
+    }
+    const { data: updated, error: updateError } = await supabase.from('agents').update(updates).eq('id', id).select().maybeSingle()
+    if (updateError) return res.status(500).json({ error: updateError.message })
+    return res.json(normalizeAgent(updated))
+  }
+  const existing = agentStore[id]
+  if (!existing) return res.status(404).json({ error: 'not found' })
+  const updated: Agent = {
+    ...existing,
+    ...incoming,
+    config: { ...(existing.config || {}), ...(incoming.config || {}) },
+  }
+  agentStore[id] = updated
+  res.json(updated)
+})
+
+app.delete('/api/agents/:id', async (req, res) => {
+  const id = req.params.id
+  if (USE_SUPABASE) {
+    const supabase = getSupabase()!
+    const { error } = await supabase.from('agents').delete().eq('id', id)
+    if (error) return res.status(500).json({ error: error.message })
+    return res.json({ ok: true })
+  }
+  if (!agentStore[id]) return res.status(404).json({ error: 'not found' })
+  delete agentStore[id]
+  res.json({ ok: true })
 })
 
 // Auth (simple mock, no real hashing)
