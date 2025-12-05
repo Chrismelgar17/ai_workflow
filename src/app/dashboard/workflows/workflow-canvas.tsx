@@ -9,6 +9,20 @@ import { getBezierPath, distance, isPointNearLine } from "@/lib/utils"
 import { Plus, Minus, MousePointer2, Hand, Trash2, RotateCcw } from 'lucide-react'
 import canvasStyles from './canvas.module.css'
 
+const getOutputAnchor = (node: Node, size: { width: number; height: number }, handleId?: string): Position => {
+  const baseY = node.position.y + size.height
+  let xRatio = 0.5
+  if (node.type === "condition") {
+    if (handleId === "output-true") xRatio = 0.25
+    else if (handleId === "output-false") xRatio = 0.75
+  }
+  return { x: node.position.x + size.width * xRatio, y: baseY }
+}
+
+const getInputAnchor = (node: Node, size: { width: number; height: number }): Position => {
+  return { x: node.position.x + size.width / 2, y: node.position.y }
+}
+
 export function Canvas() {
   const INITIAL_NODES: Node[] = [
     {
@@ -134,6 +148,7 @@ export function Canvas() {
 
   // Connection creation state
   const [connectingNodeId, setConnectingNodeId] = useState<string | null>(null)
+  const [connectingHandleId, setConnectingHandleId] = useState<string | null>(null)
   const [mousePos, setMousePos] = useState<Position>({ x: 0, y: 0 })
 
   // Measured sizes for nodes (filled by Node components)
@@ -230,6 +245,7 @@ export function Canvas() {
     if (connectingNodeId) {
       // Hit testing is handled in onPortMouseUp usually, but if we release on canvas, cancel
       setConnectingNodeId(null)
+      setConnectingHandleId(null)
     }
   }, [connectingNodeId])
 
@@ -250,23 +266,25 @@ export function Canvas() {
     }
   }, [nodes, screenToCanvas])
 
-  const handleNodeDataChange = useCallback((id: string, newData: any) => {
+  const handleNodeDataChange = useCallback((id: string, newData: Partial<NodeData>) => {
     const updatedNodes = nodes.map((node: Node) => {
-      console.log("Updating node:", id, newData);
-      if (node.id === id) {
-        // If newData contains 'action', replace action, not nest
-        return { ...node, action: newData.action};
+      if (node.id !== id) return node
+      const mergedData = { ...node.data, ...newData }
+      const actionValue = mergedData.action || node.action
+      return {
+        ...node,
+        data: mergedData,
+        action: actionValue,
       }
-      return node;
-    });
-    console.log("Updated nodes:", updatedNodes);
-    setNodes(updatedNodes);
-  }, [nodes]);
+    })
+    setNodes(updatedNodes)
+  }, [nodes])
 
-  const handlePortMouseDown = useCallback((e: React.MouseEvent, nodeId: string, type: "input" | "output") => {
+  const handlePortMouseDown = useCallback((e: React.MouseEvent, nodeId: string, type: "input" | "output", handleId: string = "output") => {
     e.stopPropagation()
     if (type === "output") {
       setConnectingNodeId(nodeId)
+      setConnectingHandleId(handleId)
     }
   }, [])
 
@@ -281,26 +299,26 @@ export function Canvas() {
   const handlePortMouseUp = useCallback((e: React.MouseEvent, nodeId: string, type: "input" | "output") => {
     e.stopPropagation()
     if (connectingNodeId && type === "input" && connectingNodeId !== nodeId) {
-      // Create connection
+      const sourceHandle = connectingHandleId || "output"
       const newConnection: Connection = {
         id: `c-${Date.now()}`,
         source: connectingNodeId,
-        sourceHandle: "output",
+        sourceHandle,
         target: nodeId,
         targetHandle: "input"
       }
       
-      // Check if connection already exists
       const exists = connections.some(c => 
-        c.source === newConnection.source && c.target === newConnection.target
+        c.source === newConnection.source && c.target === newConnection.target && c.sourceHandle === newConnection.sourceHandle
       )
-      
       if (!exists) {
-        setConnections([...connections, newConnection])
+        const filtered = connections.filter(c => !(c.source === connectingNodeId && c.sourceHandle === sourceHandle))
+        setConnections([...filtered, newConnection])
       }
-      setConnectingNodeId(null)
     }
-  }, [connectingNodeId, connections])
+    setConnectingNodeId(null)
+    setConnectingHandleId(null)
+  }, [connectingNodeId, connectingHandleId, connections])
 
   // --- Drag & Drop from Sidebar ---
 
@@ -338,9 +356,9 @@ export function Canvas() {
       const srcSize = nodeSizes[sourceNode.id] || { width: 256, height: 80 }
       const tgtSize = nodeSizes[targetNode.id] || { width: 256, height: 80 }
       // Source output pos: bottom-center of source node
-      const start = { x: sourceNode.position.x + srcSize.width / 2, y: sourceNode.position.y + srcSize.height }
+      const start = getOutputAnchor(sourceNode, srcSize, conn.sourceHandle)
       // Target input pos: top-center of target node
-      const end = { x: targetNode.position.x + tgtSize.width / 2, y: targetNode.position.y }
+      const end = getInputAnchor(targetNode, tgtSize)
 
       return isPointNearLine(center, start, end, 50) // 50px threshold
     })
@@ -485,37 +503,52 @@ export function Canvas() {
     try {
       // Build workflow steps for backend
       const steps = nodes.filter(n => n.type !== "start" && n.type !== "end").map(n => {
-        // console.log("Building step for node:", n.action);
-        let service = "custom", action = "Custom Action", config = {};
-          // Normalize action which may be either a string (label) or an object with { type, parameters }
-          const actionObj = typeof n.action === 'object' ? (n.action as any) : undefined
-          // Map node type/action to backend service/action/config
-          if (actionObj?.type === "send_message") {
-            service = "notification";
-            action = "Send SMS";
-            config = {
-              sender: actionObj?.parameters?.sender_phone,
-              receiver: actionObj?.parameters?.recipient_id,
-              body: actionObj?.parameters?.message_content
-            };
-          } else if (actionObj?.type === "send_email") {
-            service = "email";
-            action = "Send Email";
-            config = {
-              sender: actionObj?.parameters?.from_email,
-              receiver: actionObj?.parameters?.to_email,
-              subject: actionObj?.parameters?.subject,
-              body: actionObj?.parameters?.body
-            };
+        const nodeData = (n.data || {}) as NodeData
+        let service = "custom"
+        let action = "Custom Action"
+        let config: Record<string, any> = {}
+
+        const actionObj = typeof n.action === "object" ? (n.action as any) : undefined
+
+        if (actionObj?.type === "send_message") {
+          service = "notification"
+          action = "Send SMS"
+          config = {
+            sender: actionObj?.parameters?.sender_phone,
+            receiver: actionObj?.parameters?.recipient_id,
+            body: actionObj?.parameters?.message_content,
           }
+        } else if (actionObj?.type === "send_email") {
+          service = "email"
+          action = "Send Email"
+          config = {
+            sender: actionObj?.parameters?.from_email,
+            receiver: actionObj?.parameters?.to_email,
+            subject: actionObj?.parameters?.subject,
+            body: actionObj?.parameters?.body,
+          }
+        }
+
+        if (nodeData.agentId) {
+          service = service === "custom" ? "ai-agent" : service
+          action = action === "Custom Action" ? "Generate Content" : action
+          config = {
+            ...config,
+            agentId: nodeData.agentId,
+            agentPrompt: nodeData.aiConfig?.prompt ?? "",
+            agentModel: nodeData.aiConfig?.model ?? "",
+            autoEvents: nodeData.events ?? [],
+          }
+        }
+
         return {
           id: n.id,
           type: "action",
           service,
           action,
-          config
-        };
-      });
+          config,
+        }
+      })
       // console.log("Workflow steps to run:", steps);
       // Use a demo flow id for now
       const flowId = "flow_cust_onboarding";
@@ -595,8 +628,8 @@ export function Canvas() {
                     // Compute anchor points using measured sizes when available
                     const srcSize = nodeSizes[sourceNode.id] || { width: 256, height: 80 }
                     const tgtSize = nodeSizes[targetNode.id] || { width: 256, height: 80 }
-                    const startPoint = { x: sourceNode.position.x + srcSize.width / 2, y: sourceNode.position.y + srcSize.height }
-                    const endPoint = { x: targetNode.position.x + tgtSize.width / 2, y: targetNode.position.y }
+                    const startPoint = getOutputAnchor(sourceNode, srcSize, conn.sourceHandle)
+                    const endPoint = getInputAnchor(targetNode, tgtSize)
 
                     return (
                       <ConnectionComponent
@@ -614,7 +647,7 @@ export function Canvas() {
               const node = nodes.find(n => n.id === connectingNodeId)
               if (!node) return null
               const size = nodeSizes[node.id] || { width: 256, height: 80 }
-              const start = { x: node.position.x + size.width / 2, y: node.position.y + size.height }
+              const start = getOutputAnchor(node, size, connectingHandleId || undefined)
               return (
                 <path
                   d={getBezierPath(start, mousePos)}

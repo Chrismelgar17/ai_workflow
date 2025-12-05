@@ -47,6 +47,7 @@ export interface NodeData {
   action?: NodeAction | string
   events?: NodeEventType[] // Array of selected event types
   eventHandlers?: Record<NodeEventType, any> // Configuration for each event
+  agentId?: string
   [key: string]: any
 }
 

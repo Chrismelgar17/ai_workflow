@@ -11,7 +11,7 @@ interface NodeProps {
   isSelected: boolean
   onNodeClick: (id: string, shiftKey: boolean) => void
   onNodeDragStart: (e: React.MouseEvent, id: string) => void
-  onPortMouseDown: (e: React.MouseEvent, nodeId: string, type: "input" | "output") => void
+  onPortMouseDown: (e: React.MouseEvent, nodeId: string, type: "input" | "output", handleId?: string) => void
   onNodeDataChange?: (id: string, data: any) => void
   isHighlight?: boolean
   onMeasure?: (id: string, size: { width: number, height: number }) => void
@@ -29,6 +29,13 @@ const iconMap: Record<string, any> = {
   email: Mail,
   database: Database,
   ai: Bot,
+}
+
+type AgentSummary = {
+  id: string
+  name?: string
+  model?: string
+  prompt?: string
 }
 
 const NodeComponent = ({ 
@@ -146,6 +153,51 @@ const NodeComponent = ({
     prompt: "",
     evaluateLeadState: false
   }
+
+  const [agents, setAgents] = useState<AgentSummary[]>([])
+  const [agentsLoading, setAgentsLoading] = useState(true)
+
+  useEffect(() => {
+    let mounted = true
+    const load = async () => {
+      try {
+        const res = await fetch('/api/agents')
+        if (!res.ok) throw new Error('Failed to load agents')
+        const list: AgentSummary[] = await res.json()
+        if (mounted) setAgents(list)
+      } catch (error) {
+        console.error('Unable to fetch agents', error)
+      } finally {
+        if (mounted) setAgentsLoading(false)
+      }
+    }
+    load()
+    return () => { mounted = false }
+  }, [])
+
+  const handleAgentSelect = (agentId?: string) => {
+    if (!onNodeDataChange) return
+    const agent = agents.find(a => a.id === agentId)
+    onNodeDataChange(node.id, {
+      ...node.data,
+      agentId,
+      aiConfig: {
+        ...aiConfig,
+        model: agent?.model || aiConfig.model,
+        prompt: agent?.prompt ?? aiConfig.prompt,
+      },
+    })
+  }
+
+  const isCondition = node.type === "condition"
+  const outputHandles = isCondition
+    ? [
+        { id: "output-true", left: "34%", label: "True" },
+        { id: "output-false", left: "66%", label: "False" },
+      ]
+    : [
+        { id: "output", left: "50%", label: "" }
+      ]
 
   const renderActionParams = () => {
     const actionObj = typeof node.data.action === 'object' ? (node.data.action as any) : undefined
@@ -268,7 +320,7 @@ const NodeComponent = ({
           className="absolute left-1/2 -translate-x-1/2 -top-3 w-6 h-6 flex items-center justify-center cursor-crosshair z-10"
           onMouseDown={(e) => {
             e.stopPropagation()
-            onPortMouseDown(e, node.id, "input")
+            onPortMouseDown(e, node.id, "input", "input")
           }}
         >
           <div className="w-3 h-3 bg-muted-foreground/50 rounded-full border-2 border-background hover:bg-primary hover:scale-110 transition-transform" />
@@ -428,6 +480,26 @@ const NodeComponent = ({
               </div>
             </div>
 
+            <div className="space-y-1.5">
+              <div className="flex items-center justify-between text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
+                <span>Agent</span>
+                {agentsLoading && <span className="text-[9px] text-muted-foreground">Loading…</span>}
+              </div>
+              <div className="relative">
+                <select
+                  className={cn(styles.fieldInput, "w-full text-sm pr-8")}
+                  value={node.data.agentId || ""}
+                  onChange={(e) => handleAgentSelect(e.target.value || undefined)}
+                >
+                  <option value="">Custom prompt</option>
+                  {agents.map(agent => (
+                    <option key={agent.id} value={agent.id}>{agent.name || agent.id}</option>
+                  ))}
+                </select>
+                <span className="absolute inset-y-0 right-2 flex items-center text-[10px] text-muted-foreground">▾</span>
+              </div>
+            </div>
+
             {/* Lead State Toggle */}
             <div className="flex items-center justify-between p-2 rounded-lg">
               <span className="text-sm text-muted-foreground">Evaluate Lead State</span>
@@ -448,15 +520,25 @@ const NodeComponent = ({
 
       {/* Output Port (Bottom center) */}
       {node.type !== "end" && (
-        <div
-          className="absolute left-1/2 -translate-x-1/2 -bottom-3 w-6 h-6 flex items-center justify-center cursor-crosshair z-10"
-          onMouseDown={(e) => {
-            e.stopPropagation()
-            onPortMouseDown(e, node.id, "output")
-          }}
-        >
-          <div className="w-3 h-3 bg-muted-foreground/50 rounded-full border-2 border-background hover:bg-primary hover:scale-125 transition-all" />
-        </div>
+        <>
+          {outputHandles.map(handle => (
+            <div
+              key={handle.id}
+              className="absolute -bottom-6 flex flex-col items-center justify-center gap-1 cursor-crosshair z-10"
+              style={{ left: handle.left, transform: "translateX(-50%)" }}
+              onMouseDown={(e) => {
+                e.stopPropagation()
+                onPortMouseDown(e, node.id, "output", handle.id)
+              }}
+              title={handle.label ? `${handle.label} branch` : undefined}
+            >
+              <div className="w-3 h-3 bg-muted-foreground/50 rounded-full border-2 border-background hover:bg-primary hover:scale-125 transition-all" />
+              {handle.label && (
+                <span className="text-[9px] uppercase tracking-[0.2em] text-muted-foreground">{handle.label}</span>
+              )}
+            </div>
+          ))}
+        </>
       )}
     </div>
   )
