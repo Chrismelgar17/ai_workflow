@@ -1,9 +1,9 @@
 import axios, { AxiosInstance, AxiosRequestConfig } from 'axios';
 
-// Use same-origin base URL so Next.js rewrites can proxy /api/* to the backend
-// This avoids browser CORS by letting Vercel/Next act as the reverse proxy.
-// NEXT_PUBLIC_API_URL is still used by next.config.js rewrites server-side.
-const API_URL = '';
+// Prefer explicit API base when provided so local dev can reach the backend without Next.js rewrites.
+// Falls back to same-origin relative requests if NEXT_PUBLIC_API_URL is unset.
+const envApiUrl = (process.env.NEXT_PUBLIC_API_URL || '').trim();
+const API_URL = envApiUrl ? envApiUrl.replace(/\/$/, '') : '';
 const DEMO_MODE = (process.env.NEXT_PUBLIC_DEMO_MODE || 'false').toLowerCase() === 'true';
 // Allow runtime override without rebuild: set localStorage.DEMO_MODE = 'true'
 // Prefer env var NEXT_PUBLIC_DEMO_MODE; runtime localStorage overrides if set
@@ -414,6 +414,33 @@ class ApiClient {
     } catch (e) {
       // On failure, return a demo-like response so the UI remains usable
       return { ok: false, id: agentId, ...config }
+    }
+  }
+
+  async previewAgent(body: { channel: 'sms' | 'whatsapp' | 'email'; flowId?: string; nodeId?: string; step: any }) {
+    const demoSample = body.channel === 'email'
+      ? {
+          subject: 'Demo Preview Subject',
+          body: 'Hello there! This is a demo preview message generated in offline mode. Customize your agent prompt to see tailored content here.',
+          agentLanguage: body.step?.config?.agentLanguage || 'en-US',
+          agentModel: body.step?.config?.agentModel || 'gpt-4o-mini',
+          agentProvider: body.step?.config?.agentProvider || 'openai',
+        }
+      : {
+          body: 'Hi! This is a demo preview response. Connect a real agent or backend to generate live content.',
+          agentLanguage: body.step?.config?.agentLanguage || 'en-US',
+          agentModel: body.step?.config?.agentModel || 'gpt-4o-mini',
+          agentProvider: body.step?.config?.agentProvider || 'openai',
+        }
+
+    try {
+      const response = await this.client.post('/api/agents/preview', body)
+      return response.data as { body: string; subject?: string; agentLanguage?: string; agentModel?: string; agentProvider?: string }
+    } catch (error) {
+      if (RUNTIME_DEMO_MODE) {
+        return demoSample
+      }
+      throw error
     }
   }
 }

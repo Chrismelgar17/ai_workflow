@@ -6,6 +6,8 @@ import { cn } from "@/lib/utils"
 import { Play, Square, Zap, GitBranch, Clock, Globe, MessageSquare, Mail, Database, CheckCircle2, AlertCircle, Bot, Settings2, ChevronDown, ChevronRight, Activity, Command } from 'lucide-react'
 import styles from './node.module.css'
 
+type ValidationIssue = { level: 'error' | 'warning'; message: string; field?: string }
+
 interface NodeProps {
   node: Node
   isSelected: boolean
@@ -16,6 +18,9 @@ interface NodeProps {
   isHighlight?: boolean
   onMeasure?: (id: string, size: { width: number, height: number }) => void
   scale?: number
+  validationIssues?: ValidationIssue[]
+  onFillAgent?: (nodeId: string) => void
+  previewLoading?: boolean
 }
 
 const iconMap: Record<string, any> = {
@@ -36,6 +41,8 @@ type AgentSummary = {
   name?: string
   model?: string
   prompt?: string
+  language?: string
+  provider?: string
 }
 
 const NodeComponent = ({ 
@@ -47,11 +54,22 @@ const NodeComponent = ({
   onNodeDataChange,
   isHighlight,
   onMeasure,
-  scale = 1
+  scale = 1,
+  validationIssues = [],
+  onFillAgent,
+  previewLoading = false,
 }: NodeProps) => {
   const Icon = iconMap[node.data.icon || node.type] || Zap
   const [isExpanded, setIsExpanded] = useState(false)
   const nodeRef = useRef<HTMLDivElement | null>(null)
+
+  const inferProviderFromModel = (model?: string) => {
+    if (!model) return undefined
+    const normalized = model.toLowerCase()
+    if (normalized.startsWith('claude') || normalized.includes('anthropic')) return 'anthropic'
+    if (normalized.startsWith('gemini') || normalized.includes('google')) return 'google'
+    return 'openai'
+  }
 
   useEffect(() => {
     if (isSelected) setIsExpanded(true)
@@ -89,20 +107,27 @@ const NodeComponent = ({
 
   const handleAIConfigChange = (key: keyof AIConfig, value: any) => {
     if (!onNodeDataChange) return
-    const currentConfig = node.data.aiConfig || {
-      model: "gpt-4o",
-      temperature: 0.7,
-      maxTokens: 1000,
-      prompt: "",
-      evaluateLeadState: false
+    const existing: Partial<AIConfig> = node.data.aiConfig || {}
+    const currentConfig: AIConfig = {
+      model: existing.model || "gpt-4o",
+      temperature: typeof existing.temperature === 'number' ? existing.temperature : 0.7,
+      maxTokens: typeof existing.maxTokens === 'number' ? existing.maxTokens : 1000,
+      prompt: existing.prompt || "",
+      evaluateLeadState: Boolean(existing.evaluateLeadState),
+      provider: existing.provider || inferProviderFromModel(existing.model),
+      language: existing.language || 'en-US'
     }
-    
+    const nextConfig: AIConfig = {
+      ...currentConfig,
+      [key]: value
+    }
+    if (key === 'model') {
+      nextConfig.provider = inferProviderFromModel(String(value))
+    }
+
     onNodeDataChange(node.id, {
       ...node.data,
-      aiConfig: {
-        ...currentConfig,
-        [key]: value
-      }
+      aiConfig: nextConfig
     })
   }
 
@@ -151,11 +176,15 @@ const NodeComponent = ({
     temperature: 0.7,
     maxTokens: 1000,
     prompt: "",
-    evaluateLeadState: false
+    evaluateLeadState: false,
+    provider: 'openai',
+    language: 'en-US'
   }
 
   const [agents, setAgents] = useState<AgentSummary[]>([])
   const [agentsLoading, setAgentsLoading] = useState(true)
+  const hasError = validationIssues.some(issue => issue.level === 'error')
+  const hasWarning = !hasError && validationIssues.some(issue => issue.level === 'warning')
 
   useEffect(() => {
     let mounted = true
@@ -178,13 +207,15 @@ const NodeComponent = ({
   const handleAgentSelect = (agentId?: string) => {
     if (!onNodeDataChange) return
     const agent = agents.find(a => a.id === agentId)
+    const inferredProvider = agent?.provider || inferProviderFromModel(agent?.model || aiConfig.model)
     onNodeDataChange(node.id, {
       ...node.data,
       agentId,
       aiConfig: {
         ...aiConfig,
         model: agent?.model || aiConfig.model,
-        prompt: agent?.prompt ?? aiConfig.prompt,
+        language: agent?.language || aiConfig.language || 'en-US',
+        provider: inferredProvider || aiConfig.provider,
       },
     })
   }
@@ -210,12 +241,6 @@ const NodeComponent = ({
           <div className="space-y-2 animate-in fade-in slide-in-from-top-1">
             <input 
               className="w-full bg-secondary/50 rounded-md border border-border p-1.5 text-xs focus:outline-none focus:ring-1 focus:ring-primary/50 placeholder:text-muted-foreground/50"
-              placeholder="Sender Telephone (E.164, e.g. +15555550123)"
-              value={actionObj?.parameters?.sender_phone || ""}
-              onChange={(e) => handleActionParamChange("sender_phone", e.target.value)}
-            />
-            <input 
-              className="w-full bg-secondary/50 rounded-md border border-border p-1.5 text-xs focus:outline-none focus:ring-1 focus:ring-primary/50 placeholder:text-muted-foreground/50"
               placeholder="Recipient ID"
               value={actionObj?.parameters?.recipient_id || ""}
               onChange={(e) => handleActionParamChange("recipient_id", e.target.value)}
@@ -231,12 +256,6 @@ const NodeComponent = ({
       case "send_email":
         return (
           <div className="space-y-2 animate-in fade-in slide-in-from-top-1">
-            <input 
-              className="w-full bg-secondary/50 rounded-md border border-border p-1.5 text-xs focus:outline-none focus:ring-1 focus:ring-primary/50 placeholder:text-muted-foreground/50"
-              placeholder="From Email"
-              value={actionObj?.parameters?.from_email || ""}
-              onChange={(e) => handleActionParamChange("from_email", e.target.value)}
-            />
             <input 
               className="w-full bg-secondary/50 rounded-md border border-border p-1.5 text-xs focus:outline-none focus:ring-1 focus:ring-primary/50 placeholder:text-muted-foreground/50"
               placeholder="To Email"
@@ -299,7 +318,8 @@ const NodeComponent = ({
       className={cn(
         styles.nodeRoot,
         "absolute flex flex-col transition-all duration-200 group",
-        isSelected ? "ring-1 ring-primary border-primary z-20" : "z-10",
+        hasError ? "border-red-400 ring-2 ring-red-400" : hasWarning ? "border-amber-300 ring-1 ring-amber-300" : "",
+        isSelected ? (hasError || hasWarning ? "z-20" : "ring-1 ring-primary border-primary z-20") : "z-10",
         isHighlight && "ring-1 ring-blue-300",
         "hover:shadow-md",
         isExpanded ? "w-96" : "w-64 h-20"
@@ -314,6 +334,17 @@ const NodeComponent = ({
       }}
       onMouseDown={(e) => onNodeDragStart(e, node.id)}
     >
+      {(hasError || hasWarning) && (
+        <div
+          className={cn(
+            "absolute -top-2 -right-2 flex h-6 w-6 items-center justify-center rounded-full shadow",
+            hasError ? "bg-red-500 text-white" : "bg-amber-400 text-black"
+          )}
+          title={validationIssues.map(i => i.message).join('\n')}
+        >
+          <AlertCircle className="h-3.5 w-3.5" />
+        </div>
+      )}
       {/* Input Port (Top center) */}
       {node.type !== "start" && (
         <div
@@ -361,6 +392,26 @@ const NodeComponent = ({
       {isExpanded && (
         <div className={cn(styles.content, "animate-in slide-in-from-top-2 fade-in duration-200 cursor-default space-y-4")} onMouseDown={(e) => e.stopPropagation()}>
           <div className={styles.divider} />
+          {validationIssues.length > 0 && (
+            <div
+              className={cn(
+                "space-y-1 rounded-md border border-dashed p-2 text-xs",
+                hasError ? "border-red-200/80 bg-red-50/70 text-red-700" : "border-amber-200/80 bg-amber-50/70 text-amber-700"
+              )}
+            >
+              <div className="flex items-center gap-2 text-[10px] font-semibold uppercase tracking-wider">
+                <AlertCircle className="h-3 w-3" />
+                Validation
+              </div>
+              <ul className="space-y-1">
+                {validationIssues.map((issue, idx) => (
+                  <li key={`${issue.level}-${idx}`} className={issue.level === 'warning' ? 'text-amber-700' : 'text-red-700'}>
+                    {issue.message}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
           
           <div className="space-y-2">
             <div className="flex items-center gap-2 text-sm font-medium text-primary">
@@ -461,9 +512,13 @@ const NodeComponent = ({
                   onChange={(e) => handleAIConfigChange("model", e.target.value)}
                 >
                   <option value="gpt-4o">GPT-4o</option>
+                  <option value="gpt-4o-mini">GPT-4o Mini</option>
                   <option value="gpt-4-turbo">GPT-4 Turbo</option>
                   <option value="gpt-3.5-turbo">GPT-3.5 Turbo</option>
-                  <option value="claude-3-opus">Claude 3 Opus</option>
+                  <option value="claude-3-5-sonnet-20241022">Claude 3.5 Sonnet</option>
+                  <option value="claude-3-haiku-20240307">Claude 3 Haiku</option>
+                  <option value="gemini-1.5-flash">Gemini 1.5 Flash</option>
+                  <option value="gemini-1.5-pro">Gemini 1.5 Pro</option>
                 </select>
               </div>
               <div className="space-y-1.5">
@@ -478,6 +533,16 @@ const NodeComponent = ({
                   onChange={(e) => handleAIConfigChange("temperature", parseFloat(e.target.value))}
                 />
               </div>
+            </div>
+
+            <div className="space-y-1.5">
+              <label className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider">Language</label>
+              <input
+                className={cn(styles.fieldInput, "w-full text-sm")}
+                placeholder="e.g. en-US"
+                value={aiConfig.language || ''}
+                onChange={(e) => handleAIConfigChange("language", e.target.value)}
+              />
             </div>
 
             <div className="space-y-1.5">
@@ -512,6 +577,20 @@ const NodeComponent = ({
                 aria-pressed={aiConfig.evaluateLeadState}
               >
                 <div className={styles.toggleThumb} />
+              </button>
+            </div>
+
+            <div className="space-y-2">
+              <button
+                className="w-full px-3 py-2 text-xs font-semibold border border-border rounded-md bg-background hover:bg-secondary transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                onClick={(e) => {
+                  e.stopPropagation()
+                  onFillAgent?.(node.id)
+                }}
+                disabled={!onFillAgent || !node.data.agentId || previewLoading}
+                title={!node.data.agentId ? 'Select an agent to enable autofill' : undefined}
+              >
+                {previewLoading ? 'Filling content…' : 'Fill Message Body'}
               </button>
             </div>
           </div>

@@ -190,6 +190,10 @@ Environment variables:
 - `OPENAI_API_KEY` (required)
 - `OPENAI_DEFAULT_MODEL` (optional, e.g. `gpt-4o-mini`)
 - `OPENAI_SYSTEM_PROMPT` (optional)
+- `ANTHROPIC_API_KEY` (optional, future Claude support)
+- `GEMINI_API_KEY` (optional, future Gemini support)
+- `ANTHROPIC_DEFAULT_MODEL` / `ANTHROPIC_SYSTEM_PROMPT` (optional defaults)
+- `GEMINI_DEFAULT_MODEL` / `GEMINI_SYSTEM_PROMPT` (optional defaults)
 - `LLM_RATE_LIMIT_PER_MINUTE` (optional, default 60 per IP)
 - `LLM_CACHE_ENABLED` (optional, `true|false`) to enable in-memory cache for non-streaming completes
 - `LLM_BANNED_TERMS` (optional, comma-separated keywords to block in prompts)

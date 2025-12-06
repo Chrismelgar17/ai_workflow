@@ -2,12 +2,14 @@
 
 import React, { useRef, useCallback, useEffect, useMemo, useState, use } from "react"
 import { useWorkflowCanvasStore } from "@/stores/workflow-canvas-store"
-import { Node, Connection, Position, NodeType, NodeData } from "@/lib/types"
+import { Node, Connection, Position, NodeType, NodeData, AIConfig } from "@/lib/types"
 import NodeComponent from "./node"
 import ConnectionComponent from "./connection"
 import { getBezierPath, distance, isPointNearLine } from "@/lib/utils"
 import { Plus, Minus, MousePointer2, Hand, Trash2, RotateCcw } from 'lucide-react'
 import canvasStyles from './canvas.module.css'
+
+type ValidationIssue = { level: 'error' | 'warning'; message: string; field?: string }
 
 const getOutputAnchor = (node: Node, size: { width: number; height: number }, handleId?: string): Position => {
   const baseY = node.position.y + size.height
@@ -22,6 +24,8 @@ const getOutputAnchor = (node: Node, size: { width: number; height: number }, ha
 const getInputAnchor = (node: Node, size: { width: number; height: number }): Position => {
   return { x: node.position.x + size.width / 2, y: node.position.y }
 }
+
+const DEFAULT_FLOW_ID = "flow_cust_onboarding"
 
 export function Canvas() {
   const INITIAL_NODES: Node[] = [
@@ -79,64 +83,63 @@ export function Canvas() {
     return INITIAL_NODES
   }, [data])
   useEffect(() => { console.log("Nodes:", nodes) }, [nodes])
-    // Ensure start node is first and end node is last
-    const sortedNodes = useMemo(() => {
-      const startNodes = nodes.filter(n => n.type === "start")
-      const endNodes = nodes.filter(n => n.type === "end")
-      const middleNodes = nodes.filter(n => n.type !== "start" && n.type !== "end")
-      return [...startNodes, ...middleNodes, ...endNodes]
-    }, [nodes])
-    const connections = useMemo(() => {
-      // Only use data.connections if it exists and is different from INITIAL_CONNECTIONS
-      let allConnections = (data?.connections && JSON.stringify(data.connections) !== JSON.stringify(INITIAL_CONNECTIONS))
-        ? data.connections
-        : INITIAL_CONNECTIONS;
-      const validNodeIds = new Set(nodes.map(n => n.id));
-      allConnections = allConnections.filter(conn => validNodeIds.has(conn.source) && validNodeIds.has(conn.target));
+  // Ensure start node is first and end node is last
+  const sortedNodes = useMemo(() => {
+    const startNodes = nodes.filter(n => n.type === "start")
+    const endNodes = nodes.filter(n => n.type === "end")
+    const middleNodes = nodes.filter(n => n.type !== "start" && n.type !== "end")
+    return [...startNodes, ...middleNodes, ...endNodes]
+  }, [nodes])
 
-      // Ensure at least one connection with start as source
-      const hasStartSource = allConnections.some(conn => {
-        const sourceNode = nodes.find(n => n.id === conn.source)
-        return sourceNode && sourceNode.type === "start";
-      });
-      // Ensure at least one connection with end as target
-      const hasEndTarget = allConnections.some(conn => {
-        const targetNode = nodes.find(n => n.id === conn.target)
-        return targetNode && targetNode.type === "end";
-      });
+  const connections = useMemo(() => {
+    const baseConnections = (data?.connections && JSON.stringify(data.connections) !== JSON.stringify(INITIAL_CONNECTIONS))
+      ? [...data.connections]
+      : [...INITIAL_CONNECTIONS]
+    const validNodeIds = new Set(nodes.map(n => n.id))
+    const filtered = baseConnections.filter(conn => validNodeIds.has(conn.source) && validNodeIds.has(conn.target))
 
-      // Add default connection if missing
-      if (!hasStartSource) {
-        const startNode = nodes.find(n => n.type === "start");
-        const endNode = nodes.find(n => n.type === "end");
-        if (startNode && endNode) {
-          allConnections.push({
-            id: `c-init-${Date.now()}`,
-            source: startNode.id,
-            sourceHandle: "output",
-            target: endNode.id,
-            targetHandle: "input"
-          });
-        }
+    const ensureConnection = (sourceId: string, targetId: string, id: string) => {
+      if (!filtered.some(conn => conn.source === sourceId && conn.target === targetId)) {
+        filtered.push({
+          id,
+          source: sourceId,
+          sourceHandle: "output",
+          target: targetId,
+          targetHandle: "input",
+        })
       }
-      if (!hasEndTarget) {
-        const startNode = nodes.find(n => n.type === "start");
-        const endNode = nodes.find(n => n.type === "end");
-        if (startNode && endNode) {
-          allConnections.push({
-            id: `c-init-${Date.now()}-end`,
-            source: startNode.id,
-            sourceHandle: "output",
-            target: endNode.id,
-            targetHandle: "input"
-          });
-        }
+    }
+
+    const startNode = nodes.find(n => n.type === "start")
+    const endNode = nodes.find(n => n.type === "end")
+
+    if (startNode && endNode) {
+      const hasStartOutgoing = filtered.some(conn => conn.source === startNode.id)
+      if (!hasStartOutgoing) {
+        ensureConnection(startNode.id, endNode.id, `c-init-${startNode.id}-to-${endNode.id}`)
       }
-      return allConnections;
-    }, [data, nodes])
-    useEffect(() => {console.log("Connections:", connections)}, [connections])
-  const setNodes = (v: Node[]) => store.setSteps(workflowId, v)
-  const setConnections = (v: Connection[]) => store.setConnections(workflowId, v)
+      const hasEndIncoming = filtered.some(conn => conn.target === endNode.id)
+      if (!hasEndIncoming) {
+        ensureConnection(startNode.id, endNode.id, `c-init-${startNode.id}-to-${endNode.id}-fallback`)
+      }
+    }
+
+    if (endNode) {
+      nodes.forEach(node => {
+        if (node.id === endNode.id) return
+        const hasOutgoing = filtered.some(conn => conn.source === node.id)
+        if (!hasOutgoing) {
+          ensureConnection(node.id, endNode.id, `auto-${node.id}-to-${endNode.id}`)
+        }
+      })
+    }
+
+    return filtered
+  }, [data, nodes])
+
+  useEffect(() => { console.log("Connections:", connections) }, [connections])
+  const setNodes = useCallback((v: Node[]) => store.setSteps(workflowId, v), [store, workflowId])
+  const setConnections = useCallback((v: Connection[]) => store.setConnections(workflowId, v), [store, workflowId])
   const [scale, setScale] = useState(1)
   const [offset, setOffset] = useState<Position>({ x: 0, y: 0 })
   const [isDraggingCanvas, setIsDraggingCanvas] = useState(false)
@@ -157,6 +160,10 @@ export function Canvas() {
   // Selection state
   const [selectedNodes, setSelectedNodes] = useState<Set<string>>(new Set())
   const [hoveredNodeId, setHoveredNodeId] = useState<string | null>(null)
+  const [validationIssuesByNode, setValidationIssuesByNode] = useState<Record<string, ValidationIssue[]>>({})
+  const [validationSummary, setValidationSummary] = useState<{ errors: number; warnings: number } | null>(null)
+  const [previewLoading, setPreviewLoading] = useState(false)
+  const [previewNodeId, setPreviewNodeId] = useState<string | null>(null)
 
   const canvasRef = useRef<HTMLDivElement>(null)
 
@@ -237,6 +244,78 @@ export function Canvas() {
     }
   }, [isDraggingCanvas, dragStart, draggingNodeId, nodeDragOffset, screenToCanvas])
 
+  const validateWorkflow = useCallback(() => {
+    const issuesByNode: Record<string, ValidationIssue[]> = {}
+    const pushIssue = (nodeId: string, issue: ValidationIssue) => {
+      issuesByNode[nodeId] = [...(issuesByNode[nodeId] || []), issue]
+    }
+
+    const emailRegex = /^[^@\s]+@[^@\s]+\.[^@\s]+$/
+    const phoneRegex = /^\+?[0-9]{7,15}$/
+
+    if (nodes.length === 0) {
+      pushIssue('global', { level: 'error', message: 'Workflow has no steps' })
+    }
+
+    const triggerNode = nodes.find(n => n.type === 'trigger' || n.type === 'start')
+    if (!triggerNode) {
+      pushIssue('global', { level: 'error', message: 'Add a trigger/start node as the first step' })
+    }
+
+    const inboundCounts: Record<string, number> = {}
+    connections.forEach(conn => {
+      inboundCounts[conn.target] = (inboundCounts[conn.target] || 0) + 1
+    })
+
+    nodes.forEach(node => {
+      if (node.type === 'action' && !inboundCounts[node.id]) {
+        pushIssue(node.id, { level: 'error', message: 'Action has no incoming connection' })
+      }
+
+      const actionObj = typeof node.action === 'object' ? (node.action as any) : undefined
+      const params = actionObj?.parameters || {}
+
+      const isMessaging = actionObj?.type === 'send_message' || (node.service === 'messaging' && node.action === 'Send Message')
+      const isSms = actionObj?.type === 'send_message' || (node.service === 'notification' && node.action === 'Send SMS')
+      const isEmail = actionObj?.type === 'send_email' || (node.service === 'email' && (node.action === 'Send Email' || node.action === 'Send Template Email'))
+
+      if (isMessaging || isSms) {
+        const receiver = params.recipient_id || params.receiver || (node as any).config?.receiver
+        const body = params.message_content || params.body || (node as any).config?.body
+        if (!receiver) pushIssue(node.id, { level: 'error', message: 'Receiver is required' })
+        if (!body) pushIssue(node.id, { level: 'error', message: 'Message body is required' })
+        if (receiver && !phoneRegex.test(receiver) && !emailRegex.test(receiver)) {
+          pushIssue(node.id, { level: 'warning', message: 'Receiver format looks invalid (expect E.164 phone or email)' })
+        }
+      }
+
+      if (isEmail) {
+        const receiver = params.to_email || params.receiver || (node as any).config?.receiver
+        const body = params.body || (node as any).config?.body
+        const subject = params.subject || (node as any).config?.subject
+        if (!receiver) pushIssue(node.id, { level: 'error', message: 'Email recipient is required' })
+        if (receiver && !emailRegex.test(receiver)) pushIssue(node.id, { level: 'error', message: 'Email recipient is invalid' })
+        if (!body) pushIssue(node.id, { level: 'error', message: 'Email body is required' })
+        if (!subject) pushIssue(node.id, { level: 'warning', message: 'Email subject is recommended' })
+      }
+
+      if (node.data?.agentId) {
+        const prompt = node.data?.aiConfig?.prompt?.trim()
+        if (!prompt) pushIssue(node.id, { level: 'warning', message: 'Linked agent has no prompt; output may be generic' })
+      }
+    })
+
+    const errors = Object.values(issuesByNode).flat().filter(i => i.level === 'error').length
+    const warnings = Object.values(issuesByNode).flat().filter(i => i.level === 'warning').length
+
+    return {
+      ok: errors === 0,
+      errors,
+      warnings,
+      issuesByNode,
+    }
+  }, [nodes, connections])
+
   const handleMouseUp = useCallback(() => {
     setIsDraggingCanvas(false)
     setDraggingNodeId(null)
@@ -248,6 +327,22 @@ export function Canvas() {
       setConnectingHandleId(null)
     }
   }, [connectingNodeId])
+
+  const handleValidate = useCallback(async () => {
+    const result = validateWorkflow()
+    setValidationIssuesByNode(result.issuesByNode)
+    setValidationSummary({ errors: result.errors, warnings: result.warnings })
+    const { toast } = await import('sonner')
+    if (result.ok) {
+      toast.success('Workflow validation passed', { description: result.warnings ? `${result.warnings} warning${result.warnings === 1 ? '' : 's'} to review` : 'All checks succeeded.' })
+    } else {
+      const firstIssue = Object.entries(result.issuesByNode).find(([key, list]) => key !== 'global' && list.some(l => l.level === 'error'))
+      const message = firstIssue?.[1]?.find(i => i.level === 'error')?.message
+        || result.issuesByNode['global']?.find(i => i.level === 'error')?.message
+        || 'Check node configuration.'
+      toast.error(`Validation failed: ${result.errors} error${result.errors === 1 ? '' : 's'}`, { description: message })
+    }
+  }, [validateWorkflow])
 
   // --- Node Interaction ---
 
@@ -459,16 +554,16 @@ export function Canvas() {
   // Keyboard shortcuts
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      // Prevent node deletion if typing in an input or textarea
-      const active = document.activeElement;
-      const isInput = active && (active.tagName === "INPUT" || active.tagName === "TEXTAREA" || active.getAttribute("contenteditable") === "true");
+      const active = document.activeElement as HTMLElement | null
+      const isInput = active && (active.tagName === "INPUT" || active.tagName === "TEXTAREA" || active.getAttribute("contenteditable") === "true")
       if ((e.key === "Delete" || e.key === "Backspace") && !isInput) {
-        deleteSelected();
+        e.preventDefault()
+        deleteSelected()
       }
-    };
-    window.addEventListener("keydown", handleKeyDown);
-    return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [deleteSelected]);
+    }
+    window.addEventListener("keydown", handleKeyDown)
+    return () => window.removeEventListener("keydown", handleKeyDown)
+  }, [deleteSelected])
 
   // --- Path Highlighting ---
   // Find all upstream and downstream nodes from hoveredNodeId
@@ -491,6 +586,81 @@ export function Canvas() {
 
   const highlightedNodes = hoveredNodeId ? getConnectedNodes(hoveredNodeId) : new Set()
 
+  const inferProviderFromModel = useCallback((model?: string) => {
+    if (!model) return undefined
+    const normalized = model.toLowerCase()
+    if (normalized.startsWith("claude") || normalized.includes("anthropic")) return "anthropic"
+    if (normalized.startsWith("gemini") || normalized.includes("google")) return "google"
+    return "openai"
+  }, [])
+
+  const buildStepFromNode = useCallback((n: Node) => {
+    const nodeData = (n.data || {}) as NodeData
+    const actionObj = typeof n.action === "object"
+      ? (n.action as any)
+      : typeof nodeData.action === "object"
+        ? (nodeData.action as any)
+        : undefined
+
+    let service = "custom"
+    let action = "Custom Action"
+    let config: Record<string, any> = {}
+
+    if (actionObj?.type === "send_message") {
+      service = "notification"
+      action = "Send SMS"
+      config = {
+        receiver: actionObj?.parameters?.recipient_id,
+        body: actionObj?.parameters?.message_content,
+      }
+    } else if (actionObj?.type === "send_email") {
+      service = "email"
+      action = "Send Email"
+      config = {
+        receiver: actionObj?.parameters?.to_email,
+        subject: actionObj?.parameters?.subject,
+        body: actionObj?.parameters?.body,
+      }
+    }
+
+    if (nodeData.aiConfig?.language) {
+      config = {
+        ...config,
+        language: nodeData.aiConfig.language,
+      }
+    }
+
+    if (nodeData.agentId) {
+      service = service === "custom" ? "ai-agent" : service
+      action = action === "Custom Action" ? "Generate Content" : action
+      const provider = nodeData.aiConfig?.provider || inferProviderFromModel(nodeData.aiConfig?.model)
+      config = {
+        ...config,
+        agentId: nodeData.agentId,
+        agentPrompt: nodeData.aiConfig?.prompt ?? "",
+        agentModel: nodeData.aiConfig?.model ?? "",
+        language: nodeData.aiConfig?.language || nodeData.language || 'en-US',
+        agentLanguage: nodeData.aiConfig?.language || nodeData.language || 'en-US',
+        autoEvents: nodeData.events ?? [],
+        agentTemperature: nodeData.aiConfig?.temperature,
+        agentMaxTokens: nodeData.aiConfig?.maxTokens,
+        agentProvider: provider,
+      }
+    }
+
+    return {
+      id: n.id,
+      type: "action",
+      service,
+      action,
+      config: {
+        ...config,
+        nodeLabel: nodeData.label,
+        nodeDescription: nodeData.description,
+      },
+    }
+  }, [inferProviderFromModel])
+
   // --- Workflow Run Integration ---
   const [runStatus, setRunStatus] = useState<string>("")
   // Use apiClient.runFlow to run workflow
@@ -501,59 +671,22 @@ export function Canvas() {
   const handleRunWorkflow = async () => {
     setRunStatus("Running...");
     try {
+      const validation = validateWorkflow()
+      setValidationIssuesByNode(validation.issuesByNode)
+      setValidationSummary({ errors: validation.errors, warnings: validation.warnings })
+      if (!validation.ok) {
+        const { toast } = await import('sonner')
+        toast.error('Fix validation errors before running', { description: `${validation.errors} error${validation.errors === 1 ? '' : 's'} detected.` })
+        setRunStatus('Validation failed')
+        return
+      }
       // Build workflow steps for backend
-      const steps = nodes.filter(n => n.type !== "start" && n.type !== "end").map(n => {
-        const nodeData = (n.data || {}) as NodeData
-        let service = "custom"
-        let action = "Custom Action"
-        let config: Record<string, any> = {}
-
-        const actionObj = typeof n.action === "object" ? (n.action as any) : undefined
-
-        if (actionObj?.type === "send_message") {
-          service = "notification"
-          action = "Send SMS"
-          config = {
-            sender: actionObj?.parameters?.sender_phone,
-            receiver: actionObj?.parameters?.recipient_id,
-            body: actionObj?.parameters?.message_content,
-          }
-        } else if (actionObj?.type === "send_email") {
-          service = "email"
-          action = "Send Email"
-          config = {
-            sender: actionObj?.parameters?.from_email,
-            receiver: actionObj?.parameters?.to_email,
-            subject: actionObj?.parameters?.subject,
-            body: actionObj?.parameters?.body,
-          }
-        }
-
-        if (nodeData.agentId) {
-          service = service === "custom" ? "ai-agent" : service
-          action = action === "Custom Action" ? "Generate Content" : action
-          config = {
-            ...config,
-            agentId: nodeData.agentId,
-            agentPrompt: nodeData.aiConfig?.prompt ?? "",
-            agentModel: nodeData.aiConfig?.model ?? "",
-            autoEvents: nodeData.events ?? [],
-          }
-        }
-
-        return {
-          id: n.id,
-          type: "action",
-          service,
-          action,
-          config,
-        }
-      })
+      const steps = nodes
+        .filter(n => n.type !== "start" && n.type !== "end")
+        .map(buildStepFromNode)
       // console.log("Workflow steps to run:", steps);
-      // Use a demo flow id for now
-      const flowId = "flow_cust_onboarding";
       // Use connections from state
-      const result = await apiClient.runFlow(flowId, { steps, connections });
+      const result = await apiClient.runFlow(DEFAULT_FLOW_ID, { steps, connections });
       if (result.ok) {
         setRunStatus("Workflow executed successfully!");
       } else {
@@ -563,6 +696,111 @@ export function Canvas() {
       setRunStatus("Error: " + (e?.message || "Unknown error"));
     }
   }
+
+  const handleFillAgentContent = useCallback(async (nodeId: string) => {
+    const node = nodes.find(n => n.id === nodeId)
+    if (!node || node.type !== "action") return
+
+    const step = buildStepFromNode(node)
+    const agentId = (step.config as any)?.agentId
+    if (!agentId) {
+      const { toast } = await import('sonner')
+      toast.error('Select an AI agent before filling.', { description: 'Pick an agent in the node configuration to generate output.' })
+      return
+    }
+
+    const channel: 'sms' | 'whatsapp' | 'email' = step.service === 'email'
+      ? 'email'
+      : step.service === 'messaging'
+        ? 'whatsapp'
+        : 'sms'
+
+    try {
+      setPreviewNodeId(nodeId)
+      setPreviewLoading(true)
+      const response = await apiClient.previewAgent({
+        flowId: DEFAULT_FLOW_ID,
+        nodeId,
+        channel,
+        step,
+      })
+      const body = response.body || ''
+      const subject = response.subject
+      const updatedNodes = nodes.map(n => {
+        if (n.id !== nodeId) return n
+        const existingData = (n.data || {}) as NodeData
+        let actionConfig: any = typeof n.action === 'object' ? { ...(n.action as any) } : undefined
+        if (!actionConfig && typeof existingData.action === 'object') {
+          actionConfig = { ...(existingData.action as any) }
+        }
+        if (!actionConfig) {
+          actionConfig = channel === 'email'
+            ? { type: 'send_email', parameters: {} }
+            : { type: 'send_message', parameters: {} }
+        }
+        const parameters = { ...(actionConfig.parameters || {}) }
+        if (channel === 'email') {
+          parameters.body = body
+          if (typeof subject === 'string' && subject.length > 0) {
+            parameters.subject = subject
+          }
+        } else {
+          parameters.message_content = body
+          parameters.body = body
+        }
+        const updatedAction = { ...actionConfig, parameters }
+        const updatedAiConfig = { ...(existingData.aiConfig || {}) }
+        if (response.agentModel) {
+          updatedAiConfig.model = response.agentModel
+        }
+        if (response.agentProvider) {
+          updatedAiConfig.provider = response.agentProvider
+        }
+        if (response.agentLanguage) {
+          updatedAiConfig.language = response.agentLanguage
+        }
+        const mergedAiConfig: AIConfig = {
+          model: updatedAiConfig.model || existingData.aiConfig?.model || 'gpt-4o',
+          temperature: typeof updatedAiConfig.temperature === 'number'
+            ? updatedAiConfig.temperature
+            : typeof existingData.aiConfig?.temperature === 'number'
+              ? existingData.aiConfig.temperature
+              : 0.7,
+          maxTokens: typeof updatedAiConfig.maxTokens === 'number'
+            ? updatedAiConfig.maxTokens
+            : typeof existingData.aiConfig?.maxTokens === 'number'
+              ? existingData.aiConfig.maxTokens
+              : 1000,
+          prompt: typeof updatedAiConfig.prompt === 'string'
+            ? updatedAiConfig.prompt
+            : existingData.aiConfig?.prompt || '',
+          evaluateLeadState: Boolean(updatedAiConfig.evaluateLeadState ?? existingData.aiConfig?.evaluateLeadState),
+          provider: updatedAiConfig.provider || existingData.aiConfig?.provider,
+          language: updatedAiConfig.language || existingData.aiConfig?.language || existingData.language || 'en-US',
+        }
+        return {
+          ...n,
+          action: updatedAction,
+          data: {
+            ...existingData,
+            action: updatedAction,
+            language: response.agentLanguage || existingData.language,
+            aiConfig: mergedAiConfig,
+          },
+        }
+      })
+      setNodes(updatedNodes)
+      const { toast } = await import('sonner')
+      toast.success('Content filled from agent', { description: channel === 'email' ? 'Subject and body updated.' : 'Message body updated.' })
+    } catch (error: any) {
+      const message = error?.response?.data?.error || error?.message || 'Failed to generate preview'
+      const { toast } = await import('sonner')
+      toast.error('Autofill failed', { description: message })
+    } finally {
+      setPreviewLoading(false)
+      setPreviewNodeId(null)
+    }
+  }, [nodes, buildStepFromNode, setNodes])
 
   return (
     <div className={canvasStyles.canvasRoot}>
@@ -583,9 +821,15 @@ export function Canvas() {
 
       {/* Run Workflow Button */}
       <div className={canvasStyles.runArea}>
+        <button onClick={handleValidate} className="px-3 py-1.5 text-xs font-semibold border border-border rounded-lg bg-background hover:bg-secondary transition-colors">Validate</button>
         <button onClick={handleRunWorkflow} className={canvasStyles.runButton}>Run Workflow</button>
         {runStatus && (
           <span className="text-xs text-muted-foreground bg-card px-2 py-1 rounded border border-border">{runStatus}</span>
+        )}
+        {validationSummary && (
+          <span className="text-xs text-muted-foreground">
+            {validationSummary.errors > 0 ? `${validationSummary.errors} error${validationSummary.errors === 1 ? '' : 's'}` : '0 errors'}, {validationSummary.warnings} warning{validationSummary.warnings === 1 ? '' : 's'}
+          </span>
         )}
       </div>
       {/* Canvas Area */}
@@ -682,6 +926,9 @@ export function Canvas() {
                 isSelected={selectedNodes.has(node.id)}
                 isHighlight={highlightedNodes.has(node.id)}
                 scale={scale}
+                validationIssues={validationIssuesByNode[node.id]}
+                onFillAgent={handleFillAgentContent}
+                previewLoading={previewLoading && previewNodeId === node.id}
                 onNodeClick={(id, shift) => {
                   if (shift) {
                     const newSelected = new Set(selectedNodes)

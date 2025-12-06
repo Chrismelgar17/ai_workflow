@@ -37,6 +37,8 @@ export interface AIConfig {
   maxTokens: number
   prompt: string
   evaluateLeadState: boolean
+  provider?: string
+  language?: string
 }
 
 export interface NodeData {
@@ -48,6 +50,7 @@ export interface NodeData {
   events?: NodeEventType[] // Array of selected event types
   eventHandlers?: Record<NodeEventType, any> // Configuration for each event
   agentId?: string
+  language?: string
   [key: string]: any
 }
 
@@ -64,7 +67,7 @@ export interface Node {
   selected?: boolean
   // Runtime-friendly convenience properties used by the workflow UI
   service?: string
-  action?: string
+  action?: string | NodeAction
   config?: Record<string, any>
   status?: string
 }

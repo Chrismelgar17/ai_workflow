@@ -527,7 +527,9 @@ export function WorkflowCanvas({ workflowId, onBack }: WorkflowCanvasProps) {
                                 </Badge>
                               )}
                             </div>
-                            <p className="font-medium text-sm">{step.action}</p>
+                            <p className="font-medium text-sm">
+                              {typeof step.action === 'string' ? step.action : step.action?.type || 'Custom action'}
+                            </p>
                           </div>
                         </div>
 
@@ -906,7 +908,7 @@ export function WorkflowCanvas({ workflowId, onBack }: WorkflowCanvasProps) {
                                   <Input placeholder="Enter value..." className="h-8 text-sm" />
                                 </div>
                                 <p className="text-xs text-muted-foreground">
-                                  Configure {selectedStepData.action} parameters
+                                  Configure {typeof selectedStepData.action === 'string' ? selectedStepData.action : selectedStepData.action?.type || 'this'} parameters
                                 </p>
                               </>
                             ) : null)}

@@ -1,56 +1,51 @@
-import { NextResponse } from 'next/server'
-import { getAgentStore, persistAgentStore } from '@/lib/agents-store'
+import { proxyBackendJson } from '@/lib/agents-store'
 
-type Agent = {
-  id: string
-  name?: string
-  model?: string
-  provider?: string
-  language?: string
-  prompt?: string
-  config?: Record<string, any>
-}
-
-export async function GET(_request: Request, { params }: { params: { id: string } }) {
-  const store = getAgentStore()
-  const agent = store[params.id]
-  return NextResponse.json(
-    agent || {
-      id: params.id,
-      name: `Agent ${params.id.slice(0, 4)}`,
-      model: 'gpt-4o-mini',
-      provider: 'openai',
-      language: 'en',
-      prompt: '',
-      config: {},
-    }
-  )
+export async function GET(request: Request, { params }: { params: { id: string } }) {
+  const headerMap: Record<string, string> = {}
+  const token = request.headers.get('authorization')
+  if (token) headerMap.Authorization = token
+  return proxyBackendJson(`/api/agents/${params.id}`, {
+    method: 'GET',
+    headers: Object.keys(headerMap).length ? headerMap : undefined,
+  })
 }
 
 export async function PUT(request: Request, { params }: { params: { id: string } }) {
-  const body = await request.json()
-  const store = getAgentStore()
-  const existing = store[params.id]
-  const updated: Agent = {
-    id: params.id,
-    name: body?.name ?? existing?.name ?? `Agent ${params.id.slice(0, 4)}`,
-    model: body?.model ?? existing?.model ?? 'gpt-4o-mini',
-    provider: body?.provider ?? existing?.provider ?? 'openai',
-    language: body?.language ?? existing?.language ?? 'en',
-    prompt: body?.prompt ?? existing?.prompt ?? '',
-    config: { ...(existing?.config || {}), ...(body?.config || {}) },
+  let body: any = null
+  try {
+    body = await request.json()
+  } catch {
+    return new Response(
+      JSON.stringify({ error: 'invalid_json', detail: 'Request body must be valid JSON.' }),
+      { status: 400, headers: { 'Content-Type': 'application/json' } }
+    )
   }
-  store[params.id] = updated
-  persistAgentStore()
-  return NextResponse.json(updated)
+
+  if (!body || typeof body !== 'object') {
+    return new Response(
+      JSON.stringify({ error: 'invalid_body', detail: 'Request body must be a JSON object.' }),
+      { status: 400, headers: { 'Content-Type': 'application/json' } }
+    )
+  }
+
+  const headerMap: Record<string, string> = { 'Content-Type': 'application/json' }
+  const token = request.headers.get('authorization')
+  if (token) headerMap.Authorization = token
+
+  return proxyBackendJson(`/api/agents/${params.id}`, {
+    method: 'PUT',
+    headers: headerMap,
+    body: JSON.stringify(body),
+  })
 }
 
-export async function DELETE(_request: Request, { params }: { params: { id: string } }) {
-  const store = getAgentStore()
-  if (store[params.id]) {
-    delete store[params.id]
-    persistAgentStore()
-    return NextResponse.json({ ok: true })
-  }
-  return NextResponse.json({ ok: false }, { status: 404 })
+export async function DELETE(request: Request, { params }: { params: { id: string } }) {
+  const headerMap: Record<string, string> = {}
+  const token = request.headers.get('authorization')
+  if (token) headerMap.Authorization = token
+
+  return proxyBackendJson(`/api/agents/${params.id}`, {
+    method: 'DELETE',
+    headers: Object.keys(headerMap).length ? headerMap : undefined,
+  })
 }

@@ -1,57 +1,48 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs'
-import { join } from 'path'
+export const BACKEND_CANDIDATES = [
+  process.env.BACKEND_INTERNAL_URL,
+  process.env.NEXT_PUBLIC_API_URL,
+  'http://api:5000',
+  'http://localhost:5000',
+].filter((url, index, self) => url && self.indexOf(url) === index) as string[]
 
-type Agent = {
-  id: string
-  name: string
-  model: string
-  provider: string
-  language?: string
-  prompt?: string
-  config?: Record<string, unknown>
+type ProxyInit = {
+  method: string
+  headers?: Record<string, string>
+  body?: string
 }
 
-const dataDir = join(process.cwd(), 'data')
-const dataFile = join(dataDir, 'agents.json')
+export async function proxyBackendJson(path: string, init: ProxyInit): Promise<Response> {
+  let lastError: any = null
+  for (const base of BACKEND_CANDIDATES) {
+    try {
+      const upstream = await fetch(`${base}${path}`, {
+        method: init.method,
+        headers: init.headers,
+        body: init.body,
+        cache: 'no-store',
+      })
 
-function ensureDirectory() {
-  if (!existsSync(dataDir)) {
-    mkdirSync(dataDir, { recursive: true })
-  }
-}
+      const text = await upstream.text()
+      const contentType = upstream.headers.get('content-type') || ''
+      const isJson = contentType.includes('application/json')
+      const payload = isJson ? text : JSON.stringify({ raw: text })
 
-function loadFromDisk(): Record<string, Agent> {
-  try {
-    ensureDirectory()
-    if (!existsSync(dataFile)) {
-      writeFileSync(dataFile, '{}')
-      return {}
+      return new Response(payload, {
+        status: upstream.status,
+        headers: { 'Content-Type': 'application/json' },
+      })
+    } catch (error) {
+      lastError = error
     }
-    const raw = readFileSync(dataFile, 'utf-8').trim()
-    if (!raw) return {}
-    return JSON.parse(raw)
-  } catch (error) {
-    console.error('Failed to read agents file', error)
-    return {}
   }
-}
 
-function writeToDisk(store: Record<string, Agent>) {
-  try {
-    ensureDirectory()
-    writeFileSync(dataFile, JSON.stringify(store, null, 2))
-  } catch (error) {
-    console.error('Failed to persist agents file', error)
-  }
-}
-
-const cachedStore: Record<string, Agent> = (globalThis as any).__AGENTS_STORE || loadFromDisk()
-;(globalThis as any).__AGENTS_STORE = cachedStore
-
-export function getAgentStore() {
-  return cachedStore
-}
-
-export function persistAgentStore() {
-  writeToDisk(cachedStore)
+  return new Response(
+    JSON.stringify({
+      error: 'upstream_unreachable',
+      path,
+      detail: lastError?.message || 'Unable to reach backend service.',
+      tried: BACKEND_CANDIDATES,
+    }),
+    { status: 502, headers: { 'Content-Type': 'application/json' } }
+  )
 }

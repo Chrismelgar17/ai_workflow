@@ -1,26 +1,41 @@
-import { NextResponse } from 'next/server'
-import { getAgentStore, persistAgentStore } from '@/lib/agents-store'
+import { headers } from 'next/headers'
+import { proxyBackendJson } from '@/lib/agents-store'
 
 export async function GET() {
-  const store = getAgentStore()
-  const agents = Object.values(store)
-  return NextResponse.json(agents)
+  const headerMap: Record<string, string> = {}
+  const token = headers().get('authorization')
+  if (token) headerMap.Authorization = token
+  return proxyBackendJson('/api/agents', {
+    method: 'GET',
+    headers: Object.keys(headerMap).length ? headerMap : undefined,
+  })
 }
 
 export async function POST(request: Request) {
-  const body = await request.json()
-  const id = body?.id || `${Date.now().toString(36)}_${Math.random().toString(36).slice(2,6)}`
-  const agent: Agent = {
-    id,
-    name: body?.name || `Agent ${id.slice(0, 4)}`,
-    model: body?.model || 'gpt-4o-mini',
-    provider: body?.provider || 'openai',
-    language: body?.language || 'en',
-    prompt: body?.prompt || '',
-    config: body?.config || {}
+  let body: any = null
+  try {
+    body = await request.json()
+  } catch {
+    return new Response(
+      JSON.stringify({ error: 'invalid_json', detail: 'Request body must be valid JSON.' }),
+      { status: 400, headers: { 'Content-Type': 'application/json' } }
+    )
   }
-  const store = getAgentStore()
-  store[id] = agent
-  persistAgentStore()
-  return NextResponse.json(agent, { status: 201 })
+
+  if (!body || typeof body !== 'object') {
+    return new Response(
+      JSON.stringify({ error: 'invalid_body', detail: 'Request body must be a JSON object.' }),
+      { status: 400, headers: { 'Content-Type': 'application/json' } }
+    )
+  }
+
+  const headerMap: Record<string, string> = { 'Content-Type': 'application/json' }
+  const token = request.headers.get('authorization')
+  if (token) headerMap.Authorization = token
+
+  return proxyBackendJson('/api/agents', {
+    method: 'POST',
+    headers: headerMap,
+    body: JSON.stringify(body),
+  })
 }
