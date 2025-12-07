@@ -1,10 +1,10 @@
 // Non-JSX shim re-exporting the TSX implementation to avoid build errors when
 // resolution prefers .ts over .tsx for extensionless imports.
 import React, { ReactNode } from "react"
-import { Zap, Webhook, Mail, Database, MessageSquare, CreditCard, FileText, Bell, Calendar, Code } from "lucide-react"
+import { Zap, Webhook, Mail, Database, MessageSquare, CreditCard, FileText, Bell, Calendar, Code, PhoneCall } from "lucide-react"
 
 export type ServiceKey =
-	| "webhook" | "email" | "database" | "messaging" | "payment" | "document" | "notification" | "scheduler" | "api"
+	| "webhook" | "email" | "database" | "messaging" | "payment" | "document" | "notification" | "scheduler" | "api" | "voice"
 
 export interface WorkflowServiceMeta {
 	key: ServiceKey
@@ -27,6 +27,7 @@ export const WORKFLOW_SERVICES: WorkflowServiceMeta[] = [
 	{ key: "notification", label: "Notifications", description: "Multi-channel send", defaultAction: "Send Push Notification", actions: ["Send Push Notification", "Send SMS", "Send Alert"], icon: I(Bell) },
 	{ key: "scheduler", label: "Delay / Schedule", description: "Wait or schedule", defaultAction: "Schedule Task", actions: ["Schedule Task", "Delay Execution", "Every Hour"], icon: I(Calendar) },
 	{ key: "api", label: "API Request", description: "Call external API", defaultAction: "Call API Endpoint", actions: ["Call API Endpoint", "Transform Data", "Validate Response"], icon: I(Code) },
+	{ key: "voice", label: "Voice Call", description: "Place AI phone calls", defaultAction: "Start Voice Call", actions: ["Start Voice Call"], icon: I(PhoneCall) },
 ]
 
 export const SERVICE_BY_KEY: Record<string, WorkflowServiceMeta> = WORKFLOW_SERVICES.reduce((acc, s) => { acc[s.key] = s; return acc }, {} as Record<string, WorkflowServiceMeta>)

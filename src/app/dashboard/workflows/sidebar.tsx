@@ -2,7 +2,7 @@
 
 import React from "react"
 import { NodeType } from "@/lib/types"
-import { Play, Square, Zap, GitBranch, Clock, Globe, MessageSquare, Mail, Database, GripVertical } from 'lucide-react'
+import { Play, Square, Zap, GitBranch, Clock, Globe, MessageSquare, Mail, Database, GripVertical, PhoneCall } from 'lucide-react'
 
 const nodeTypes: { type: NodeType; label: string; icon: any; description: string }[] = [
   { type: "trigger", label: "Webhook Trigger", icon: Zap, description: "Start on request" },
@@ -12,6 +12,7 @@ const nodeTypes: { type: NodeType; label: string; icon: any; description: string
   { type: "webhook", label: "HTTP Request", icon: Globe, description: "Call external API" },
   { type: "action", label: "Database Query", icon: Database, description: "SQL / NoSQL" },
   { type: "action", label: "Slack Message", icon: MessageSquare, description: "Post to channel" },
+  { type: "voice", label: "Voice Call", icon: PhoneCall, description: "Place Retell outbound call" },
   { type: "end", label: "End Workflow", icon: Square, description: "Terminate process" },
 ]
 

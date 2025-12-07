@@ -22,6 +22,7 @@ import {
   Bell,
   Calendar,
   Code,
+  PhoneCall,
   MoreVertical,
   AlertCircle,
   CheckCircle,
@@ -84,6 +85,8 @@ export function WorkflowCanvas({ workflowId, onBack }: WorkflowCanvasProps) {
         return <Calendar className="h-5 w-5" />
       case "api":
         return <Code className="h-5 w-5" />
+      case "voice":
+        return <PhoneCall className="h-5 w-5" />
       default:
         return <Zap className="h-5 w-5" />
     }
@@ -100,6 +103,7 @@ export function WorkflowCanvas({ workflowId, onBack }: WorkflowCanvasProps) {
       notification: "Notification Service",
       scheduler: "Scheduler",
       api: "API Service",
+      voice: "Voice Call",
     }
     return names[service] || service
   }
@@ -114,6 +118,7 @@ export function WorkflowCanvas({ workflowId, onBack }: WorkflowCanvasProps) {
     notification: "Send Push Notification",
     scheduler: "Schedule Task",
     api: "Call API Endpoint",
+    voice: "Start Voice Call",
   }
 
   // Actions per service for the Event buttons
@@ -137,6 +142,8 @@ export function WorkflowCanvas({ workflowId, onBack }: WorkflowCanvasProps) {
         return ["Schedule Task", "Delay Execution", "Every Hour"]
       case "api":
         return ["Call API Endpoint", "Transform Data", "Validate Response"]
+      case "voice":
+        return ["Start Voice Call"]
       default:
         return []
     }
@@ -349,6 +356,23 @@ export function WorkflowCanvas({ workflowId, onBack }: WorkflowCanvasProps) {
             }
         }
         if (!cfg.timezone) errors.push({ stepId: step.id, field: 'timezone', message: 'Timezone is recommended', level: 'warning' })
+      }
+      if (step.service === 'voice' && step.action === 'Start Voice Call') {
+        const cfg: any = step.config || {}
+        const channel = (cfg.channel || 'phone').toLowerCase()
+        if (!cfg.agentId) {
+          errors.push({ stepId: step.id, field: 'agentId', message: 'Agent ID is required', level: 'error' })
+        }
+        if (channel !== 'phone' && channel !== 'web') {
+          errors.push({ stepId: step.id, field: 'channel', message: 'Channel must be phone or web', level: 'error' })
+        }
+        if (channel !== 'web') {
+          if (!cfg.toPhoneNumber) {
+            errors.push({ stepId: step.id, field: 'toPhoneNumber', message: 'Recipient number is required', level: 'error' })
+          } else if (!phoneRegex.test(cfg.toPhoneNumber)) {
+            errors.push({ stepId: step.id, field: 'toPhoneNumber', message: 'Recipient number looks invalid', level: 'warning' })
+          }
+        }
       }
     })
     const warnings = errors.filter(e => e.level === 'warning').length
@@ -637,6 +661,7 @@ export function WorkflowCanvas({ workflowId, onBack }: WorkflowCanvasProps) {
                           { value: "notification", label: "Notification" },
                           { value: "scheduler", label: "Scheduler" },
                           { value: "api", label: "API Service" },
+                          { value: "voice", label: "Voice Call" },
                         ].map((opt) => (
                           <Button
                             key={opt.value}
@@ -793,6 +818,94 @@ export function WorkflowCanvas({ workflowId, onBack }: WorkflowCanvasProps) {
                             </>
                           ) : null}
 
+                          {/* Voice call config */}
+                          {(selectedStepData.service === 'voice' && selectedStepData.action === 'Start Voice Call') ? (
+                            <>
+                              <div className="space-y-2">
+                                <Label className="text-xs">Agent ID</Label>
+                                <Input
+                                  placeholder="Retell agent ID"
+                                  className={cn("h-8 text-sm", (testErrors.find(e => e.stepId === selectedStepData.id && e.field === 'agentId' && e.level === 'error')) && "border-red-500 focus-visible:ring-red-500")}
+                                  value={(selectedStepData.config?.agentId as string) || ''}
+                                  onChange={(e) => {
+                                    const cfg: any = { ...(selectedStepData.config || {}), agentId: e.target.value }
+                                    updateStep(selectedStepData.id, { config: cfg })
+                                  }}
+                                />
+                                {testErrors.find(e => e.stepId === selectedStepData.id && e.field === 'agentId' && e.level === 'error') && (
+                                  <p className="text-[11px] text-red-600">{testErrors.find(e => e.stepId === selectedStepData.id && e.field === 'agentId' && e.level === 'error')?.message}</p>
+                                )}
+                              </div>
+                              <div className="space-y-2">
+                                <Label className="text-xs">Channel</Label>
+                                <div className="flex gap-2">
+                                  {['phone', 'web'].map((channel) => (
+                                    <Button
+                                      key={channel}
+                                      variant={(selectedStepData.config?.channel || 'phone') === channel ? 'default' : 'outline'}
+                                      size="sm"
+                                      onClick={() => {
+                                        const cfg: any = { ...(selectedStepData.config || {}), channel }
+                                        updateStep(selectedStepData.id, { config: cfg })
+                                      }}
+                                    >
+                                      {channel === 'phone' ? 'Phone Call' : 'Web Call'}
+                                    </Button>
+                                  ))}
+                                </div>
+                                <p className="text-[11px] text-muted-foreground">Phone calls use Retell to dial a number, web calls return a web call token.</p>
+                              </div>
+                              {(selectedStepData.config?.channel || 'phone') !== 'web' && (
+                                <>
+                                  <div className="space-y-2">
+                                    <Label className="text-xs">Recipient Number</Label>
+                                    <Input
+                                      placeholder="+1..."
+                                      className={cn("h-8 text-sm", (testErrors.find(e => e.stepId === selectedStepData.id && e.field === 'toPhoneNumber' && e.level === 'error')) && "border-red-500 focus-visible:ring-red-500")}
+                                      value={(selectedStepData.config?.toPhoneNumber as string) || ''}
+                                      onChange={(e) => {
+                                        const cfg: any = { ...(selectedStepData.config || {}), toPhoneNumber: e.target.value }
+                                        updateStep(selectedStepData.id, { config: cfg })
+                                      }}
+                                    />
+                                    {testErrors.find(e => e.stepId === selectedStepData.id && e.field === 'toPhoneNumber' && e.level === 'error') && (
+                                      <p className="text-[11px] text-red-600">{testErrors.find(e => e.stepId === selectedStepData.id && e.field === 'toPhoneNumber' && e.level === 'error')?.message}</p>
+                                    )}
+                                  </div>
+                                  <div className="space-y-2">
+                                    <Label className="text-xs">Caller ID (optional)</Label>
+                                    <Input
+                                      placeholder="+1..."
+                                      className="h-8 text-sm"
+                                      value={(selectedStepData.config?.fromPhoneNumber as string) || ''}
+                                      onChange={(e) => {
+                                        const cfg: any = { ...(selectedStepData.config || {}), fromPhoneNumber: e.target.value }
+                                        updateStep(selectedStepData.id, { config: cfg })
+                                      }}
+                                    />
+                                  </div>
+                                </>
+                              )}
+                              <div className="space-y-2">
+                                <Label className="text-xs">Metadata (optional)</Label>
+                                <Textarea
+                                  placeholder='JSON metadata, e.g. {"leadId":"123"}'
+                                  className="min-h-[80px] text-sm"
+                                  value={typeof selectedStepData.config?.metadata === 'string'
+                                    ? selectedStepData.config?.metadata
+                                    : selectedStepData.config?.metadata
+                                      ? JSON.stringify(selectedStepData.config?.metadata, null, 2)
+                                      : ''}
+                                  onChange={(e) => {
+                                    const cfg: any = { ...(selectedStepData.config || {}), metadata: e.target.value }
+                                    updateStep(selectedStepData.id, { config: cfg })
+                                  }}
+                                />
+                                <p className="text-[11px] text-muted-foreground">Optional JSON payload sent to Retell for context.</p>
+                              </div>
+                            </>
+                          ) : null}
+
                           {/* Messaging/Email specific config */}
                           {((selectedStepData.service === 'messaging' && selectedStepData.action === 'Send Message')
                             || (selectedStepData.service === 'notification' && selectedStepData.action === 'Send SMS')
@@ -897,7 +1010,7 @@ export function WorkflowCanvas({ workflowId, onBack }: WorkflowCanvasProps) {
                                   <p className="text-[10px] text-muted-foreground mt-2">Optional. Overrides project defaults for this step only. Leave empty to use environment configuration.</p>
                                 </div>
                               </>
-                            ) : (! (selectedStepData.service === 'scheduler' && selectedStepData.action === 'Schedule Task') ? (
+                            ) : (! ((selectedStepData.service === 'scheduler' && selectedStepData.action === 'Schedule Task') || (selectedStepData.service === 'voice' && selectedStepData.action === 'Start Voice Call')) ? (
                               <>
                                 <div className="space-y-2">
                                   <Label className="text-xs">Parameter 1</Label>

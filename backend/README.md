@@ -227,3 +227,4 @@ const call = await retell.createPhoneCall({ agentId: agents[0].id, toPhoneNumber
 Notes:
 - This wrapper uses `fetch` and avoids additional SDK installs. You can swap to the official SDK later.
 - Endpoints (`/v1/agents`, `/v1/calls/phone`, `/v1/calls/web`) may vary; adjust per your Retell account documentation.
+- The backend exposes `POST /api/agents/:id/voice-call` which looks up the stored agent config, validates that `provider === "retell"`, and launches a phone or web call against the Retell API. Supply `channel`, `toPhoneNumber`, and optional `metadata` in the request body.

@@ -18,7 +18,8 @@ type Agent = {
 
 const filters = [
   { value: 'all', label: 'All' },
-  { value: 'openai', label: 'Voice' },
+  { value: 'openai', label: 'Text (OpenAI)' },
+  { value: 'retell', label: 'Voice (Retell)' },
   { value: 'whatsapp', label: 'WhatsApp' },
   { value: 'email', label: 'Email' },
 ]
@@ -141,7 +142,7 @@ export default function AgentsListPage() {
                 </div>
               </div>
               <div className="flex flex-wrap gap-2">
-                <span className="text-[10px] font-semibold uppercase tracking-wide px-3 py-1 rounded-full bg-indigo-50 text-indigo-600">{agent.provider || 'Voice'}</span>
+                <span className="text-[10px] font-semibold uppercase tracking-wide px-3 py-1 rounded-full bg-indigo-50 text-indigo-600">{(agent.provider || 'OpenAI').toUpperCase()}</span>
                 <span className="text-[10px] font-semibold uppercase tracking-wide px-3 py-1 rounded-full bg-amber-50 text-amber-600">{agent.model || 'Single-prompt'}</span>
                 <span className="text-[10px] font-semibold uppercase tracking-wide px-3 py-1 rounded-full bg-emerald-50 text-emerald-600">Paused</span>
               </div>

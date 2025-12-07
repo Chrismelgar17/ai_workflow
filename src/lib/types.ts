@@ -1,4 +1,4 @@
-export type NodeType = "start" | "end" | "action" | "condition" | "trigger" | "webhook" | "delay" | "email" | "database"
+export type NodeType = "start" | "end" | "action" | "condition" | "trigger" | "webhook" | "delay" | "email" | "database" | "voice"
 
 export type NodeActionType =
   | "send_message"
@@ -11,6 +11,7 @@ export type NodeActionType =
   | "transform_content"
   | "http_request"
   | "evaluate_lead_state"
+  | "start_voice_call"
 
 export interface NodeAction {
   type: NodeActionType

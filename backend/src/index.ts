@@ -9,6 +9,7 @@ import { requireAuth } from './middleware/auth.js'
 import { unifiedAction } from './integrations/unified.js'
 import { NangoClient } from './integrations/nangoClient.js'
 import { runCompletion, streamCompletion } from './integrations/llm.js'
+import { RetellService } from './integrations/retell.js'
 import fs from 'fs'
 import path from 'path'
 
@@ -117,6 +118,12 @@ function llmRateLimit(req: any, res: any, next: any) {
   next()
 }
 
+function getRetellService() {
+  const apiKey = process.env.RETELL_API_KEY
+  if (!apiKey) throw new Error('RETELL_API_KEY is not configured')
+  return new RetellService({ apiKey, baseUrl: process.env.RETELL_BASE_URL })
+}
+
 app.get('/api/openapi.json', (_req, res) => res.json(openapi))
 app.use('/api/docs', swaggerUi.serve, swaggerUi.setup(openapi))
 
@@ -192,6 +199,140 @@ function normalizeAgent(row: any): Agent {
     config: config,
     created_at: row.created_at,
   }
+}
+
+class RetellCallError extends Error {
+  code: string
+  status: number
+
+  constructor(code: string, message: string, status = 400) {
+    super(message)
+    this.code = code
+    this.status = status
+  }
+}
+
+function pickFirstString(...values: Array<unknown>): string | undefined {
+  for (const value of values) {
+    if (typeof value === 'string') {
+      const trimmed = value.trim()
+      if (trimmed.length > 0) return trimmed
+    }
+  }
+  return undefined
+}
+
+function parseMetadataInput(value: unknown): Record<string, any> | null {
+  if (value === undefined || value === null) return null
+  if (typeof value === 'string') {
+    const trimmed = value.trim()
+    if (!trimmed) return null
+    try {
+      const parsed = JSON.parse(trimmed)
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        return { ...parsed }
+      }
+      return { raw: trimmed }
+    } catch {
+      return { raw: trimmed }
+    }
+  }
+  if (typeof value === 'object') {
+    if (Array.isArray(value)) {
+      return { items: [...value] }
+    }
+    return { ...(value as Record<string, any>) }
+  }
+  return null
+}
+
+function mergeMetadata(...sources: Array<unknown>): Record<string, any> {
+  const merged: Record<string, any> = {}
+  for (const source of sources) {
+    const parsed = parseMetadataInput(source)
+    if (parsed) Object.assign(merged, parsed)
+  }
+  return merged
+}
+
+type StartRetellVoiceCallOptions = {
+  channel?: string
+  toPhoneNumber?: string
+  fromPhoneNumber?: string
+  metadata?: Record<string, any>
+  overrides?: Record<string, any>
+}
+
+async function startRetellVoiceCall(agent: Agent, options: StartRetellVoiceCallOptions = {}) {
+  if (!agent) {
+    throw new RetellCallError('agent_not_found', 'Agent not found.', 404)
+  }
+
+  const provider = (agent.provider || '').toLowerCase()
+  if (provider !== 'retell') {
+    throw new RetellCallError('retell_agent_required', 'Voice calls require an agent with provider retell.', 400)
+  }
+
+  const config = agent.config || {}
+  const overrides = options.overrides || {}
+  const retellAgentId = pickFirstString(
+    config.retellAgentId,
+    config.agentId,
+    config.retell_id,
+    config?.retell?.agentId
+  )
+
+  if (!retellAgentId) {
+    throw new RetellCallError('retell_agent_id_missing', 'Store the Retell agent ID under config.retellAgentId.', 400)
+  }
+
+  const channelRaw = options.channel ?? overrides.channel ?? config.retellChannel ?? 'phone'
+  const channel = String(channelRaw || 'phone').toLowerCase() === 'web' ? 'web' : 'phone'
+
+  const metadata = mergeMetadata(config.retellMetadata, overrides.metadata, options.metadata)
+  metadata.workflow_agent_id = agent.id
+  metadata.workflow_agent_name = agent.name
+  metadata.workflow_agent_provider = agent.provider
+  metadata.workflow_channel = channel
+  if (!metadata.workflow_triggered_at) {
+    metadata.workflow_triggered_at = new Date().toISOString()
+  }
+
+  const service = getRetellService()
+
+  if (channel === 'web') {
+    const response = await service.createWebCall({ agentId: retellAgentId, metadata })
+    return { channel: 'web' as const, result: response, metadata }
+  }
+
+  const toPhoneNumber = pickFirstString(
+    options.toPhoneNumber,
+    overrides.toPhoneNumber,
+    overrides.to,
+    config.retellDefaultToNumber,
+    config.defaultToNumber
+  )
+
+  if (!toPhoneNumber) {
+    throw new RetellCallError('toPhoneNumber_required', 'Provide toPhoneNumber in the call options or set config.retellDefaultToNumber.', 400)
+  }
+
+  const fromPhoneNumber = pickFirstString(
+    options.fromPhoneNumber,
+    overrides.fromPhoneNumber,
+    overrides.from,
+    config.retellCallerId,
+    config.callerId
+  )
+
+  const response = await service.createPhoneCall({
+    agentId: retellAgentId,
+    toPhoneNumber,
+    fromPhoneNumber,
+    metadata,
+  })
+
+  return { channel: 'phone' as const, result: response, toPhoneNumber, fromPhoneNumber, metadata }
 }
 
 type AgentPreviewChannel = 'sms' | 'whatsapp' | 'email'
@@ -448,6 +589,39 @@ app.delete('/api/agents/:id', async (req, res) => {
   if (!agentStore[id]) return res.status(404).json({ error: 'not found' })
   delete agentStore[id]
   res.json({ ok: true })
+})
+
+app.post('/api/agents/:id/voice-call', async (req, res) => {
+  try {
+    const id = req.params.id
+    const agent = await findAgentById(id)
+    if (!agent) {
+      return res.status(404).json({ error: 'not_found', detail: 'Agent not found.' })
+    }
+    const body = req.body || {}
+    const metadata = mergeMetadata(body.metadata)
+    if (!metadata.workflow_source) {
+      metadata.workflow_source = 'agent_endpoint'
+    }
+
+    const result = await startRetellVoiceCall(agent, {
+      channel: body.channel,
+      toPhoneNumber: body.toPhoneNumber ?? body.to,
+      fromPhoneNumber: body.fromPhoneNumber ?? body.from,
+      metadata,
+      overrides: body,
+    })
+
+    return res.json(result)
+  } catch (error: any) {
+    if (error instanceof RetellCallError) {
+      return res.status(error.status).json({ error: error.code, detail: error.message })
+    }
+    const message = typeof error?.message === 'string' ? error.message : 'retell_error'
+    const status = message.includes('RETELL_API_KEY') ? 500 : 502
+    console.error('Retell voice call failed', error)
+    return res.status(status).json({ error: 'retell_error', detail: message })
+  }
 })
 
 app.post('/api/agents/preview', async (req, res) => {
@@ -853,6 +1027,41 @@ app.post('/api/flows/:id/run', requireAuth, async (req, res) => {
     try {
       if (s.type !== 'action') continue
       const cfg = (s as any).config || {}
+      if (s.service === 'voice' && s.action === 'Start Voice Call') {
+        const agentIdCandidate = pickFirstString(cfg.agentId, cfg.agent_id, cfg.agent)
+        if (!agentIdCandidate) {
+          executions.push({ stepId: s.id, type: 'retell.voice-call', status: 'error', error: 'agentId is required for voice call steps' })
+          continue
+        }
+        const agent = await findAgentById(agentIdCandidate)
+        if (!agent) {
+          executions.push({ stepId: s.id, type: 'retell.voice-call', status: 'error', error: `Agent ${agentIdCandidate} not found` })
+          continue
+        }
+        const metadata = mergeMetadata(cfg.metadata)
+        metadata.workflow_flow_id = req.params.id
+        metadata.workflow_step_id = s.id
+        metadata.workflow_source = metadata.workflow_source || 'workflow_run'
+        try {
+          const result = await startRetellVoiceCall(agent, {
+            channel: cfg.channel,
+            toPhoneNumber: cfg.toPhoneNumber,
+            fromPhoneNumber: cfg.fromPhoneNumber,
+            metadata,
+            overrides: cfg,
+          })
+          executions.push({ stepId: s.id, type: 'retell.voice-call', status: 'success', result })
+        } catch (err: any) {
+          if (err instanceof RetellCallError) {
+            executions.push({ stepId: s.id, type: 'retell.voice-call', status: 'error', error: { code: err.code, message: err.message } })
+          } else {
+            const message = typeof err?.message === 'string' ? err.message : 'retell_error'
+            const detail = err?.response?.data || err?.detail
+            executions.push({ stepId: s.id, type: 'retell.voice-call', status: 'error', error: { message, detail } })
+          }
+        }
+        continue
+      }
       // SMS via Twilio
       if (s.service === 'notification' && s.action === 'Send SMS') {
         let enrichedCfg = cfg

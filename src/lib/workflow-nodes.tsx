@@ -1,10 +1,10 @@
 import React, { ReactNode } from "react"
 import { 
-  Zap, Webhook, Mail, Database, MessageSquare, CreditCard, FileText, Bell, Calendar, Code
+  Zap, Webhook, Mail, Database, MessageSquare, CreditCard, FileText, Bell, Calendar, Code, PhoneCall
 } from "lucide-react"
 
 export type ServiceKey = 
-  | "webhook" | "email" | "database" | "messaging" | "payment" | "document" | "notification" | "scheduler" | "api"
+  | "webhook" | "email" | "database" | "messaging" | "payment" | "document" | "notification" | "scheduler" | "api" | "voice"
 
 export interface WorkflowServiceMeta {
   key: ServiceKey
@@ -87,6 +87,14 @@ export const WORKFLOW_SERVICES: WorkflowServiceMeta[] = [
     defaultAction: "Call API Endpoint",
     actions: ["Call API Endpoint", "Transform Data", "Validate Response"],
     icon: <Code className="h-5 w-5" />,
+  },
+  {
+    key: "voice",
+    label: "Voice Call",
+    description: "Place AI-driven phone calls",
+    defaultAction: "Start Voice Call",
+    actions: ["Start Voice Call"],
+    icon: <PhoneCall className="h-5 w-5" />,
   },
 ]
 
