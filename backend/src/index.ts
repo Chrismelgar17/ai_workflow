@@ -7,7 +7,8 @@ import swaggerUi from 'swagger-ui-express'
 import { getSupabase, USE_SUPABASE } from './db/supabase.js'
 import { requireAuth } from './middleware/auth.js'
 import { unifiedAction } from './integrations/unified.js'
-import { NangoClient } from './integrations/nangoClient.js'
+import { NangoClient, composeProviderCatalog, DEFAULT_PROVIDER_CATALOG } from './integrations/nangoClient.js'
+import type { ConnectSessionEndUser, ConnectSessionIntegrationDefaults, CreateConnectSessionPayload } from './integrations/nangoClient.js'
 import { runCompletion, streamCompletion } from './integrations/llm.js'
 import { RetellService } from './integrations/retell.js'
 import fs from 'fs'
@@ -1344,6 +1345,211 @@ app.post('/api/webhooks/twilio', express.urlencoded({ extended: false }), (req, 
 // Could be enhanced to handle WhatsApp webhooks when configured.
 
 // Nango connections management API (server-side only; requires NANGO_SECRET_KEY)
+app.get('/api/nango/provider-catalog', requireAuth, async (_req, res) => {
+  try {
+    const client = new NangoClient()
+    let remoteList: any[] = []
+    try {
+      const raw = await client.listProviderConfigs()
+      if (Array.isArray(raw)) {
+        remoteList = raw
+      } else if (Array.isArray((raw as any)?.data)) {
+        remoteList = (raw as any).data
+      } else if (Array.isArray((raw as any)?.provider_configs)) {
+        remoteList = (raw as any).provider_configs
+      }
+    } catch (inner: any) {
+      if (process.env.NODE_ENV !== 'production') {
+        console.warn('[nango] provider catalog fetch failed', inner?.message || inner)
+      }
+    }
+    const catalog = composeProviderCatalog(remoteList)
+    if (!catalog.length) {
+      return res.json(DEFAULT_PROVIDER_CATALOG)
+    }
+    res.json(catalog)
+  } catch (e: any) {
+    res.json(DEFAULT_PROVIDER_CATALOG)
+  }
+})
+
+app.post('/api/nango/oauth/start', requireAuth, async (req, res) => {
+  try {
+    const { provider_config_key, connection_id, return_url, metadata, scopes, params, force_update, end_user } = req.body || {}
+    if (!provider_config_key) {
+      return res.status(400).json({ error: 'provider_config_key is required' })
+    }
+    const connectionId = typeof connection_id === 'string' && connection_id.trim().length ? connection_id.trim() : `conn_${Date.now()}`
+    const portalBase = process.env.NANGO_OAUTH_RETURN_URL || process.env.PUBLIC_PORTAL_URL || process.env.PORTAL_URL || `http://localhost:${process.env.PORTAL_PORT || '3000'}`
+    const resolvedReturn = typeof return_url === 'string' && return_url.trim().length ? return_url : `${portalBase.replace(/\/$/, '')}/dashboard/connections`
+
+    const client = new NangoClient()
+    let integrationExists: boolean | null = null
+    try {
+      const rawConfigs = await client.listProviderConfigs()
+      const configs = Array.isArray(rawConfigs)
+        ? rawConfigs
+        : Array.isArray((rawConfigs as any)?.data)
+          ? (rawConfigs as any).data
+          : Array.isArray((rawConfigs as any)?.provider_configs)
+            ? (rawConfigs as any).provider_configs
+            : []
+      integrationExists = configs.some((cfg: any) => {
+        const key = typeof cfg?.unique_key === 'string' && cfg.unique_key.trim().length
+          ? cfg.unique_key.trim()
+          : typeof cfg?.provider_config_key === 'string' && cfg.provider_config_key.trim().length
+            ? cfg.provider_config_key.trim()
+            : typeof cfg?.providerConfigKey === 'string' && cfg.providerConfigKey.trim().length
+              ? cfg.providerConfigKey.trim()
+              : undefined
+        return key === provider_config_key
+      })
+    } catch (integrationCheckError) {
+      integrationExists = null
+      if (process.env.NODE_ENV !== 'production') {
+        console.warn('[nango] failed to verify provider_config_key existence', integrationCheckError)
+      }
+    }
+    if (integrationExists === false) {
+      return res.status(400).json({
+        error: 'integration_not_found',
+        detail: `No Nango integration with key "${provider_config_key}" exists. Create it in Nango or adjust the provider_config_key before starting OAuth.`,
+      })
+    }
+
+    const authUser = (req as any).authUser || {}
+    const candidateAuthEmail = typeof authUser?.email === 'string' ? authUser.email.trim() : ''
+    const isLikelyEmail = (value?: string) => {
+      if (!value) return false
+      const trimmed = value.trim()
+      const atIndex = trimmed.indexOf('@')
+      if (atIndex <= 0 || atIndex === trimmed.length - 1) return false
+      const domain = trimmed.slice(atIndex + 1)
+      return domain.includes('.')
+    }
+
+    const resolvedEndUser: ConnectSessionEndUser = {
+      id: (end_user && typeof end_user === 'object' && typeof end_user.id === 'string' && end_user.id.trim())
+        ? end_user.id.trim()
+        : (typeof authUser?.id === 'string' && authUser.id.trim() ? authUser.id.trim() : `workflow-user-${Date.now()}`),
+    }
+
+    const providedEmail = end_user && typeof end_user === 'object' && typeof end_user.email === 'string' ? end_user.email.trim() : undefined
+    if (providedEmail && isLikelyEmail(providedEmail)) {
+      resolvedEndUser.email = providedEmail
+    } else if (isLikelyEmail(candidateAuthEmail)) {
+      resolvedEndUser.email = candidateAuthEmail
+    }
+
+    let providedName: string | undefined
+    if (end_user && typeof end_user === 'object') {
+      if (typeof end_user.name === 'string' && end_user.name.trim()) {
+        providedName = end_user.name.trim()
+      } else if (typeof (end_user as any).display_name === 'string' && (end_user as any).display_name.trim()) {
+        providedName = (end_user as any).display_name.trim()
+      }
+    }
+    if (providedName) {
+      resolvedEndUser.display_name = providedName
+    } else if (typeof authUser?.name === 'string' && authUser.name.trim()) {
+      resolvedEndUser.display_name = authUser.name.trim()
+    }
+    const tags: Record<string, string> = {}
+    const metadataSource = (end_user && typeof end_user === 'object' && end_user.metadata && typeof end_user.metadata === 'object') ? end_user.metadata : undefined
+    if (metadataSource) {
+      for (const [key, value] of Object.entries(metadataSource)) {
+        if (!key) continue
+        if (value === null || value === undefined) continue
+        try {
+          tags[key] = typeof value === 'string' ? value : JSON.stringify(value)
+        } catch {
+          tags[key] = String(value)
+        }
+      }
+    }
+    tags.connection_id = connectionId
+    if (Object.keys(tags).length) {
+      resolvedEndUser.tags = { ...(resolvedEndUser.tags || {}), ...tags }
+    }
+
+    const collectScopes = () => {
+      if (Array.isArray(scopes)) {
+        return scopes.map((s: any) => (typeof s === 'string' ? s.trim() : '')).filter(Boolean)
+      }
+      if (typeof scopes === 'string') {
+        return scopes.split(',').map((s) => s.trim()).filter(Boolean)
+      }
+      return []
+    }
+
+    const resolvedScopes = collectScopes()
+    const resolvedReturnUrl = resolvedReturn
+
+    let authorizationParams: Record<string, string> | undefined
+    if (params && typeof params === 'object') {
+      authorizationParams = {}
+      for (const [key, value] of Object.entries(params)) {
+        if (!key) continue
+        if (value === null || value === undefined) continue
+        authorizationParams[key] = typeof value === 'string' ? value : String(value)
+      }
+      if (Object.keys(authorizationParams).length === 0) {
+        authorizationParams = undefined
+      }
+    }
+
+    const integrationDefaults: Record<string, ConnectSessionIntegrationDefaults> = {}
+    const configDefaults: ConnectSessionIntegrationDefaults = {}
+    if (authorizationParams) {
+      configDefaults.authorization_params = authorizationParams
+    }
+    if (resolvedScopes.length) {
+      configDefaults.user_scopes = resolvedScopes.join(',')
+    }
+    if (Object.keys(configDefaults).length) {
+      integrationDefaults[provider_config_key] = configDefaults
+    }
+
+    const payload: CreateConnectSessionPayload = {
+      end_user: resolvedEndUser,
+      allowed_integrations: [provider_config_key],
+      ...(Object.keys(integrationDefaults).length ? { integrations_config_defaults: integrationDefaults } : {}),
+    }
+
+    const sessionResponse: any = await client.createConnectSession(payload)
+    const session = sessionResponse?.data || sessionResponse
+    const connectLink = session?.connect_link || session?.authorization_url || session?.url
+    const connectToken = session?.token || session?.connect_token
+    if (!connectLink) {
+      return res.status(502).json({ error: 'authorization_url_missing', detail: 'Nango did not return a connect link.' })
+    }
+    let authorizationUrl = connectLink
+    try {
+      const url = new URL(connectLink)
+      if (resolvedReturnUrl && !url.searchParams.has('return_to')) {
+        url.searchParams.set('return_to', resolvedReturnUrl)
+      }
+      authorizationUrl = url.toString()
+    } catch {}
+    res.json({
+      authorizationUrl,
+      connectionId: session?.connection_id || connectionId,
+      providerConfigKey: session?.provider_config_key || provider_config_key,
+      connectLink,
+      connectSessionToken: connectToken,
+      expiresAt: session?.expires_at || session?.expiresAt,
+      sessionId: session?.id,
+      raw: session,
+      returnUrl: resolvedReturnUrl,
+      requestedConnectionId: connectionId,
+    })
+  } catch (e: any) {
+    const status = e?.status || e?.response?.status || 500
+    const detail = e?.response?.data || e?.detail
+    res.status(status).json({ error: e?.message || 'failed_to_start_oauth', detail })
+  }
+})
+
 app.get('/api/nango/connections', requireAuth, async (_req, res) => {
   try {
     const client = new NangoClient()

@@ -1,5 +1,46 @@
 import axios, { AxiosInstance, AxiosRequestConfig } from 'axios';
 
+export type NangoProviderCatalogEntry = {
+  key: string;
+  provider: string;
+  title: string;
+  categories: string[];
+  description?: string;
+  docsUrl?: string;
+  authMode?: string;
+  recommendedCredentialType?: 'API_KEY' | 'BASIC' | 'OAUTH' | 'CUSTOM';
+  tags?: string[];
+};
+export type StartNangoOAuthPayload = {
+  provider_config_key: string;
+  connection_id?: string;
+  return_url?: string;
+  metadata?: Record<string, any>;
+  scopes?: string[] | string;
+  params?: Record<string, any>;
+  force_update?: boolean;
+  end_user?: {
+    id?: string;
+    email?: string;
+    name?: string;
+    display_name?: string;
+    metadata?: Record<string, any>;
+    tags?: Record<string, string>;
+  };
+};
+
+export type NangoOAuthSession = {
+  authorizationUrl: string;
+  connectionId: string;
+  providerConfigKey: string;
+  expiresAt?: string;
+  sessionId?: string;
+  connectLink?: string;
+  connectSessionToken?: string;
+  returnUrl?: string;
+  requestedConnectionId?: string;
+};
+
 // Prefer explicit API base when provided so local dev can reach the backend without Next.js rewrites.
 // Falls back to same-origin relative requests if NEXT_PUBLIC_API_URL is unset.
 const envApiUrl = (process.env.NEXT_PUBLIC_API_URL || '').trim();
@@ -257,6 +298,14 @@ class ApiClient {
   async getNangoConnection(connectionId: string) {
     const response = await this.client.get(`/api/nango/connections/${connectionId}`);
     return response.data;
+  }
+  async getNangoProviderCatalog() {
+    const response = await this.client.get('/api/nango/provider-catalog');
+    return response.data as NangoProviderCatalogEntry[];
+  }
+  async startNangoOAuthSession(payload: StartNangoOAuthPayload) {
+    const response = await this.client.post('/api/nango/oauth/start', payload);
+    return response.data as NangoOAuthSession;
   }
   async importNangoConnection(body: { provider_config_key: string; connection_id: string; credentials: any }) {
     const response = await this.client.post('/api/nango/connections/import', body);
