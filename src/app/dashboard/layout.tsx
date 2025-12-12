@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
@@ -24,7 +24,6 @@ import {
   Cpu
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
-import { useState } from 'react'
 
 const navigation = [
   { name: 'Dashboard', href: '/dashboard', icon: LayoutDashboard },
@@ -47,7 +46,26 @@ export default function DashboardLayout({
   const router = useRouter()
   const pathname = usePathname()
   const { user, isAuthenticated, clearAuth, hydrated } = useAuthStore()
-  const [sidebarOpen, setSidebarOpen] = useState(true)
+  const [sidebarOpen, setSidebarOpen] = useState(false)
+  const [isDesktop, setIsDesktop] = useState(false)
+
+  const syncViewportState = useCallback(() => {
+    if (typeof window === 'undefined') return
+    const desktop = window.matchMedia('(min-width: 1024px)').matches
+    setIsDesktop(desktop)
+    setSidebarOpen(desktop)
+  }, [])
+
+  useEffect(() => {
+    syncViewportState()
+  }, [syncViewportState])
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    const handleResize = () => syncViewportState()
+    window.addEventListener('resize', handleResize)
+    return () => window.removeEventListener('resize', handleResize)
+  }, [syncViewportState])
 
   useEffect(() => {
     if (!hydrated) return
@@ -60,6 +78,8 @@ export default function DashboardLayout({
     clearAuth()
     router.push('/auth/login')
   }
+
+  
 
   if (!hydrated) {
     return (
@@ -164,7 +184,7 @@ export default function DashboardLayout({
             <Button
               variant="ghost"
               size="icon"
-              onClick={() => setSidebarOpen(!sidebarOpen)}
+              onClick={() => setSidebarOpen((open) => (isDesktop ? true : !open))}
             >
               <Menu className="h-5 w-5" />
             </Button>
@@ -182,14 +202,6 @@ export default function DashboardLayout({
           {children}
         </main>
       </div>
-
-      {/* Overlay */}
-      {sidebarOpen && (
-        <div
-          className="fixed inset-0 z-40 bg-black bg-opacity-50 lg:hidden"
-          onClick={() => setSidebarOpen(false)}
-        />
-      )}
     </div>
   )
 }
