@@ -1,9 +1,50 @@
 import axios, { AxiosInstance, AxiosRequestConfig } from 'axios';
 
-// Use same-origin base URL so Next.js rewrites can proxy /api/* to the backend
-// This avoids browser CORS by letting Vercel/Next act as the reverse proxy.
-// NEXT_PUBLIC_API_URL is still used by next.config.js rewrites server-side.
-const API_URL = '';
+export type NangoProviderCatalogEntry = {
+  key: string;
+  provider: string;
+  title: string;
+  categories: string[];
+  description?: string;
+  docsUrl?: string;
+  authMode?: string;
+  recommendedCredentialType?: 'API_KEY' | 'BASIC' | 'OAUTH' | 'CUSTOM';
+  tags?: string[];
+};
+export type StartNangoOAuthPayload = {
+  provider_config_key: string;
+  connection_id?: string;
+  return_url?: string;
+  metadata?: Record<string, any>;
+  scopes?: string[] | string;
+  params?: Record<string, any>;
+  force_update?: boolean;
+  end_user?: {
+    id?: string;
+    email?: string;
+    name?: string;
+    display_name?: string;
+    metadata?: Record<string, any>;
+    tags?: Record<string, string>;
+  };
+};
+
+export type NangoOAuthSession = {
+  authorizationUrl: string;
+  connectionId: string;
+  providerConfigKey: string;
+  expiresAt?: string;
+  sessionId?: string;
+  connectLink?: string;
+  connectSessionToken?: string;
+  returnUrl?: string;
+  requestedConnectionId?: string;
+};
+
+// Prefer explicit API base when provided so local dev can reach the backend without Next.js rewrites.
+// Falls back to same-origin relative requests if NEXT_PUBLIC_API_URL is unset.
+const envApiUrl = (process.env.NEXT_PUBLIC_API_URL || '').trim();
+const API_URL = envApiUrl ? envApiUrl.replace(/\/$/, '') : '';
 const DEMO_MODE = (process.env.NEXT_PUBLIC_DEMO_MODE || 'false').toLowerCase() === 'true';
 // Allow runtime override without rebuild: set localStorage.DEMO_MODE = 'true'
 // Prefer env var NEXT_PUBLIC_DEMO_MODE; runtime localStorage overrides if set
@@ -258,6 +299,14 @@ class ApiClient {
     const response = await this.client.get(`/api/nango/connections/${connectionId}`);
     return response.data;
   }
+  async getNangoProviderCatalog() {
+    const response = await this.client.get('/api/nango/provider-catalog');
+    return response.data as NangoProviderCatalogEntry[];
+  }
+  async startNangoOAuthSession(payload: StartNangoOAuthPayload) {
+    const response = await this.client.post('/api/nango/oauth/start', payload);
+    return response.data as NangoOAuthSession;
+  }
   async importNangoConnection(body: { provider_config_key: string; connection_id: string; credentials: any }) {
     const response = await this.client.post('/api/nango/connections/import', body);
     return response.data;
@@ -366,6 +415,82 @@ class ApiClient {
   async deleteUser(id: string) {
     const response = await this.client.delete(`/api/users/${id}`);
     return response.data as { ok: boolean };
+  }
+
+  // Agent configuration (UI-facing): get/save agent settings
+  async getAgents() {
+    const demoAgents = [
+      { id: 'agent_demo', name: 'GPT5 Demo Agent', owner: 'Amy', status: 'paused', totalActivity: 2, successRate: '50%', avgDuration: '2:26' },
+      { id: 'agent_olivia_inbound', name: 'Lead Manager - Olivia (Active)', owner: 'Olivia', status: 'active', totalActivity: 56, successRate: '18%', avgDuration: '0:20' },
+      { id: 'agent_outbound_warm', name: 'OUTBOUND WARM AGENT', owner: 'Jane', status: 'paused', totalActivity: 22, successRate: '9%', avgDuration: '0:30' },
+    ];
+    if (RUNTIME_DEMO_MODE) return Promise.resolve(demoAgents);
+    try {
+      const response = await this.client.get('/api/agents');
+      return response.data;
+    } catch (e) {
+      // Fallback to demo list when backend is unavailable
+      return demoAgents;
+    }
+  }
+
+  async getAgentConfig(agentId: string) {
+    if (RUNTIME_DEMO_MODE) {
+      return Promise.resolve({
+        id: agentId,
+        model: 'gpt-4o-mini',
+        language: 'en-US',
+        voice: 'alloy',
+        prompt: 'Explain the difference between caching and rate limiting in one paragraph.',
+      })
+    }
+    try {
+      const response = await this.client.get(`/api/agents/${agentId}`)
+      return response.data
+    } catch (e) {
+      // Fallback to demo config if backend is unavailable or returns an error
+      return { id: agentId, model: 'gpt-4o-mini', language: 'en-US', voice: 'alloy', prompt: 'Explain the difference between caching and rate limiting in one paragraph.' }
+    }
+  }
+
+  async saveAgentConfig(agentId: string, config: any) {
+    if (RUNTIME_DEMO_MODE) {
+      return Promise.resolve({ ok: true, id: agentId, ...config })
+    }
+    try {
+      const response = await this.client.put(`/api/agents/${agentId}`, config)
+      return response.data
+    } catch (e) {
+      // On failure, return a demo-like response so the UI remains usable
+      return { ok: false, id: agentId, ...config }
+    }
+  }
+
+  async previewAgent(body: { channel: 'sms' | 'whatsapp' | 'email'; flowId?: string; nodeId?: string; step: any }) {
+    const demoSample = body.channel === 'email'
+      ? {
+          subject: 'Demo Preview Subject',
+          body: 'Hello there! This is a demo preview message generated in offline mode. Customize your agent prompt to see tailored content here.',
+          agentLanguage: body.step?.config?.agentLanguage || 'en-US',
+          agentModel: body.step?.config?.agentModel || 'gpt-4o-mini',
+          agentProvider: body.step?.config?.agentProvider || 'openai',
+        }
+      : {
+          body: 'Hi! This is a demo preview response. Connect a real agent or backend to generate live content.',
+          agentLanguage: body.step?.config?.agentLanguage || 'en-US',
+          agentModel: body.step?.config?.agentModel || 'gpt-4o-mini',
+          agentProvider: body.step?.config?.agentProvider || 'openai',
+        }
+
+    try {
+      const response = await this.client.post('/api/agents/preview', body)
+      return response.data as { body: string; subject?: string; agentLanguage?: string; agentModel?: string; agentProvider?: string }
+    } catch (error) {
+      if (RUNTIME_DEMO_MODE) {
+        return demoSample
+      }
+      throw error
+    }
   }
 }
 

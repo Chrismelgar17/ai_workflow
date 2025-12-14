@@ -1,8 +1,8 @@
 'use client'
 
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import apiClient from '@/lib/api-client'
+import apiClient, { NangoProviderCatalogEntry, StartNangoOAuthPayload } from '@/lib/api-client'
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -18,6 +18,10 @@ export default function ConnectionsPage() {
     queryKey: ['nangoConnections'],
     queryFn: () => apiClient.getNangoConnections(),
   })
+  const { data: providerCatalog, isLoading: isProviderLoading, isError: isProviderError, error: providerError } = useQuery<NangoProviderCatalogEntry[]>({
+    queryKey: ['nangoProviderCatalog'],
+    queryFn: () => apiClient.getNangoProviderCatalog(),
+  })
 
   const disconnect = useMutation({
     mutationFn: (id: string) => apiClient.deleteConnection(id),
@@ -31,6 +35,7 @@ export default function ConnectionsPage() {
 
   // Simple import form state
   const [importForm, setImportForm] = useState({ provider_config_key: '', connection_id: '', credential_type: 'API_KEY', api_key: '', basic_username: '', basic_password: '' })
+  const [providerFilter, setProviderFilter] = useState('')
   const importMutation = useMutation({
     mutationFn: () => {
       const credentials = importForm.credential_type === 'API_KEY'
@@ -44,6 +49,68 @@ export default function ConnectionsPage() {
     }
   })
 
+  const [oauthError, setOauthError] = useState<string | null>(null)
+
+  const oauthMutation = useMutation({
+    mutationFn: (payload: StartNangoOAuthPayload) => apiClient.startNangoOAuthSession(payload),
+    onSuccess: (session) => {
+      setOauthError(null)
+      if (session?.authorizationUrl && typeof window !== 'undefined') {
+        window.location.href = session.authorizationUrl
+      }
+    },
+    onError: (err: any) => {
+      setOauthError(err?.message || 'Failed to start OAuth session')
+    }
+  })
+
+  const filteredCatalog = useMemo(() => {
+    if (!Array.isArray(providerCatalog)) return []
+    const term = providerFilter.trim().toLowerCase()
+    if (!term) return providerCatalog
+    return providerCatalog.filter((entry: NangoProviderCatalogEntry) => {
+      const haystack = [
+        entry.key,
+        entry.title,
+        entry.provider,
+        ...(entry.categories || []),
+        entry.description || '',
+        ...(entry.tags || []),
+      ]
+        .join(' ')
+        .toLowerCase()
+      return haystack.includes(term)
+    })
+  }, [providerCatalog, providerFilter])
+
+  const handlePrefill = (entry: NangoProviderCatalogEntry) => {
+    const credential = entry.recommendedCredentialType === 'BASIC' ? 'BASIC' : 'API_KEY'
+    setImportForm((f) => ({
+      ...f,
+      provider_config_key: entry.key,
+      credential_type: credential,
+      api_key: credential === 'API_KEY' ? '' : f.api_key,
+      basic_username: credential === 'BASIC' ? '' : f.basic_username,
+      basic_password: credential === 'BASIC' ? '' : f.basic_password,
+    }))
+  }
+
+  const isCatalogLoading = isProviderLoading && !providerCatalog
+
+  const handleStartOAuth = (entry: NangoProviderCatalogEntry) => {
+    if (typeof window === 'undefined') return
+    const defaultConnectionId = entry.key.replace(/[^a-zA-Z0-9_-]/g, '-')
+    const connectionId = window.prompt('Choose a connection identifier for this provider', defaultConnectionId)
+    if (!connectionId) return
+    const returnUrl = `${window.location.origin}/dashboard/connections`
+    setOauthError(null)
+    oauthMutation.mutate({
+      provider_config_key: entry.key,
+      connection_id: connectionId,
+      return_url: returnUrl
+    })
+  }
+
   return (
     <div className="space-y-6">
       <div>
@@ -53,6 +120,97 @@ export default function ConnectionsPage() {
 
       {isLoading && <Card><CardContent className="p-6">Loading connections…</CardContent></Card>}
       {isError && <Card><CardContent className="p-6 text-red-600">Failed to load connections: {(error as any)?.message}</CardContent></Card>}
+
+      <div className="space-y-4">
+        <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3">
+          <div>
+            <h2 className="text-2xl font-semibold">Provider Catalog</h2>
+            <p className="text-gray-600 dark:text-gray-400 text-sm">Curated third-party integrations available through Nango.</p>
+          </div>
+          <Input
+            className="md:w-72"
+            placeholder="Search providers or categories"
+            value={providerFilter}
+            onChange={(e) => setProviderFilter(e.target.value)}
+          />
+        </div>
+        {oauthError && <div className="text-sm text-red-600">{oauthError}</div>}
+        {isProviderError ? (
+          <Card><CardContent className="p-6 text-red-600">Failed to load provider catalog: {(providerError as any)?.message || 'unknown error'}</CardContent></Card>
+        ) : isCatalogLoading ? (
+          <Card><CardContent className="p-6">Loading provider catalog…</CardContent></Card>
+        ) : filteredCatalog.length > 0 ? (
+          <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-6">
+            {filteredCatalog.map((entry) => {
+              const importable = entry.recommendedCredentialType === 'API_KEY' || entry.recommendedCredentialType === 'BASIC'
+              const authMode = entry.authMode?.toLowerCase()
+              const supportsOAuth = authMode === 'oauth' || entry.recommendedCredentialType === 'OAUTH'
+              return (
+                <Card key={entry.key} className="h-full flex flex-col">
+                  <CardHeader>
+                    <div className="flex items-center justify-between gap-2">
+                      <div>
+                        <CardTitle className="text-lg">{entry.title}</CardTitle>
+                        <CardDescription>{entry.provider}</CardDescription>
+                      </div>
+                      <Badge variant="secondary">{entry.authMode ? entry.authMode.toUpperCase() : 'INTEGRATION'}</Badge>
+                    </div>
+                    <div className="flex flex-wrap gap-2 mt-3">
+                      {entry.categories?.map((cat) => (
+                        <Badge key={cat} variant="outline" className="text-xs uppercase tracking-wide">{cat}</Badge>
+                      ))}
+                    </div>
+                  </CardHeader>
+                  <CardContent className="flex-1 flex flex-col gap-4">
+                    <p className="text-sm text-muted-foreground">{entry.description || 'Connect with this provider via Nango.'}</p>
+                    {entry.tags && entry.tags.length > 0 && (
+                      <div className="flex flex-wrap gap-1">
+                        {entry.tags.map((tag) => (
+                          <Badge key={tag} variant="outline" className="text-[10px] uppercase tracking-wide bg-muted text-muted-foreground">
+                            {tag}
+                          </Badge>
+                        ))}
+                      </div>
+                    )}
+                    <div className="mt-auto flex flex-wrap items-center gap-2">
+                      {importable && (
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          disabled={oauthMutation.isPending}
+                          onClick={() => handlePrefill(entry)}
+                        >
+                          Prefill Import
+                        </Button>
+                      )}
+                      {supportsOAuth && (
+                        <Button
+                          size="sm"
+                          disabled={oauthMutation.isPending}
+                          onClick={() => handleStartOAuth(entry)}
+                        >
+                          {oauthMutation.isPending ? 'Starting…' : 'Connect'}
+                        </Button>
+                      )}
+                      {entry.docsUrl && (
+                        <Button size="sm" variant="link" className="px-0" asChild>
+                          <a href={entry.docsUrl} target="_blank" rel="noreferrer">Docs</a>
+                        </Button>
+                      )}
+                    </div>
+                    {!importable && !supportsOAuth && (
+                      <p className="text-xs text-muted-foreground">Launch the OAuth flow from the provider dashboard to connect.</p>
+                    )}
+                    <div className="text-xs text-muted-foreground">Key: <code className="font-mono text-muted-foreground/90">{entry.key}</code></div>
+                  </CardContent>
+                </Card>
+              )
+            })}
+          </div>
+        ) : (
+          <Card><CardContent className="p-6">No providers match that search yet.</CardContent></Card>
+        )}
+      </div>
 
       {Array.isArray(data) && data.length > 0 ? (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">

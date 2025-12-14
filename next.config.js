@@ -16,7 +16,9 @@ const nextConfig = {
     NEXT_PUBLIC_DEMO_MODE: process.env.NEXT_PUBLIC_DEMO_MODE,
   },
   async rewrites() {
-    const apiBase = process.env.NEXT_PUBLIC_API_URL
+    // In development prefer local in-app /api routes to allow testing of demo endpoints.
+    // Only enable the proxy rewrite when not in development and an API base is provided.
+    const apiBase = process.env.NODE_ENV === 'development' ? undefined : process.env.NEXT_PUBLIC_API_URL
     // If API base is provided, proxy /api/* through Next to avoid CORS issues on Vercel
     if (apiBase) {
       return [

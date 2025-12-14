@@ -13,6 +13,8 @@ services:
       # LLM / OpenAI configuration (ensure OPENAI_API_KEY is set in your .env file)
       - OPENAI_API_KEY=${OPENAI_API_KEY}
       - OPENAI_DEFAULT_MODEL=${OPENAI_DEFAULT_MODEL:-gpt-4o-mini}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
       - LLM_CACHE_ENABLED=${LLM_CACHE_ENABLED:-false}
       - SUPABASE_URL=${SUPABASE_URL}
       - SUPABASE_SERVICE_ROLE_KEY=${SUPABASE_SERVICE_ROLE_KEY}
@@ -41,31 +43,33 @@ services:
       timeout: 10s
       retries: 3
       start_period: 10s
-  # portal-ui (production) disabled for now; use portal-ui-dev instead
-  # portal-ui:
-  #   build: .
-  #   container_name: portal-ui
-  #   ports:
-  #     - "3002:3002"
-  #   environment:
-  #     - NODE_ENV=production
-  #     - NEXT_PUBLIC_API_URL=http://localhost:5000
-  #     - NEXT_PUBLIC_ACTIVEPIECES_URL=http://localhost:8080
-  #     - NEXT_PUBLIC_FLOWISE_URL=http://localhost:3000
-  #     - NEXT_PUBLIC_TEMPORAL_URL=http://localhost:8088
-  #     - NEXT_PUBLIC_GRAFANA_URL=http://localhost:3001
-  #     - NEXT_PUBLIC_NANGO_URL=http://localhost:3003
-  #     - NEXT_PUBLIC_APP_NAME=AI Workflow Portal
-  #     - NEXT_PUBLIC_APP_VERSION=3.0.0
-  #   networks:
-  #     - ai-workflow-network
-  #   restart: unless-stopped
-  #   healthcheck:
-  #     test: ["CMD-SHELL", "curl -f http://localhost:3002 || exit 1"]
-  #     interval: 30s
-  #     timeout: 10s
-  #     retries: 3
-  #     start_period: 40s
+  portal-ui:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: runner
+    container_name: portal-ui
+    environment:
+      - NODE_ENV=production
+      - NEXT_PUBLIC_API_URL=http://api:5000
+      - NEXT_PUBLIC_APP_NAME=AI Workflow Portal
+      - NEXT_PUBLIC_APP_VERSION=3.0.0
+      - NEXT_PUBLIC_NANGO_URL=${NEXT_PUBLIC_NANGO_URL}
+      - NEXT_PUBLIC_SUPABASE_URL=${NEXT_PUBLIC_SUPABASE_URL}
+      - NEXT_PUBLIC_SUPABASE_ANON_KEY=${NEXT_PUBLIC_SUPABASE_ANON_KEY}
+    depends_on:
+      - api
+    ports:
+      - "3002:3002"
+    networks:
+      - ai-workflow-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:3002 || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
 
   # Development container with hot reload (HMR)
   portal-ui-dev:
@@ -92,7 +96,6 @@ services:
       - "3002:3002"
     volumes:
       - .:/app
-      - /app/node_modules
     networks:
       - ai-workflow-network
     restart: unless-stopped

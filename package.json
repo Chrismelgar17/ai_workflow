@@ -24,6 +24,7 @@
     "@radix-ui/react-tabs": "^1.1.0",
     "@radix-ui/react-toast": "^1.2.1",
     "@radix-ui/react-tooltip": "^1.1.2",
+    "@supabase/supabase-js": "^2.45.1",
     "@tanstack/react-query": "^5.51.1",
     "axios": "^1.7.2",
     "class-variance-authority": "^0.7.0",
@@ -34,13 +35,17 @@
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "react-hook-form": "^7.52.1",
+    "reactflow": "^11.10.4",
     "recharts": "^2.12.7",
     "sonner": "^1.5.0",
+    "sweetalert2": "^11.26.3",
     "tailwind-merge": "^2.4.0",
     "tailwindcss-animate": "^1.0.7",
     "zod": "^3.23.8",
-    "zustand": "^4.5.4",
-    "@supabase/supabase-js": "^2.45.1"
+    "zustand": "^4.5.4"
+  },
+  "optionalDependencies": {
+    "@next/swc-linux-x64-gnu": "14.2.33"
   },
   "devDependencies": {
     "@types/node": "^20.14.11",

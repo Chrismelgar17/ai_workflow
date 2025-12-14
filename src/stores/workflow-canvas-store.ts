@@ -1,30 +1,16 @@
 "use client"
 
 import { create } from "zustand"
+
+import { Node, Connection, Position } from "@/lib/types"
 import { persist, createJSONStorage } from "zustand/middleware"
-
-export type WorkflowStep = {
-  id: string
-  type: "trigger" | "action"
-  service: string
-  action: string
-  // Allow non-string values (booleans, numbers) in step config
-  config: Record<string, any>
-  status: "configured" | "incomplete" | "error"
-}
-
-export type StepConnection = {
-  id: string
-  fromStep: string
-  toStep: string
-  description?: string
-}
 
 export type WorkflowData = {
   name: string
   status: "draft" | "active"
-  steps: WorkflowStep[]
-  connections: StepConnection[]
+  steps: Node[]
+  connections: Connection[]
+  positions?: Record<string, Position>
 }
 
 type Store = {
@@ -32,8 +18,8 @@ type Store = {
   init: (id: string) => void
   setName: (id: string, name: string) => void
   setStatus: (id: string, status: WorkflowData["status"]) => void
-  setSteps: (id: string, steps: WorkflowStep[]) => void
-  setConnections: (id: string, connections: StepConnection[]) => void
+  setSteps: (id: string, steps: Node[]) => void
+  setConnections: (id: string, connections: Connection[]) => void
   reset: (id: string) => void
 }
 
@@ -42,15 +28,22 @@ const initialData: WorkflowData = {
   status: "draft",
   steps: [
     {
-      id: "step-1",
-      type: "trigger",
-      service: "webhook",
-      action: "HTTP Request Received",
-      config: {},
-      status: "configured",
+      id: "start-1",
+      type: "start",
+      position: { x: 250, y: 80 },
+      data: { label: "Start", description: "Workflow trigger", icon: "start" },
+    },
+    {
+      id: "end-1",
+      type: "end",
+      position: { x: 250, y: 260 },
+      data: { label: "End", description: "Workflow completion", icon: "end" },
     },
   ],
-  connections: [],
+  connections: [
+    { id: "conn-1", source: "start-1", sourceHandle: "output", target: "end-1", targetHandle: "input" },
+  ],
+  positions: {},
 }
 
 export const useWorkflowCanvasStore = create<Store>()(
@@ -61,6 +54,20 @@ export const useWorkflowCanvasStore = create<Store>()(
         const exists = get().byId[id]
         if (!exists) {
           set((s) => ({ byId: { ...s.byId, [id]: { ...initialData } } }))
+          return
+        }
+        if (!exists.steps || exists.steps.length === 0) {
+          set((s) => ({
+            byId: {
+              ...s.byId,
+              [id]: {
+                ...exists,
+                steps: [...initialData.steps],
+                connections: [...(initialData.connections || [])],
+                positions: { ...(initialData.positions || {}) },
+              },
+            },
+          }))
         }
       },
       setName: (id, name) => set((s) => ({ byId: { ...s.byId, [id]: { ...(s.byId[id] || initialData), name } } })),

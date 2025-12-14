@@ -1,947 +1,957 @@
 "use client"
 
-import { useEffect, useMemo, useState } from "react"
-import { Button } from "@/components/ui/button"
-import { Input } from "@/components/ui/input"
-import { Label } from "@/components/ui/label"
-import { Card } from "@/components/ui/card"
-import { Badge } from "@/components/ui/label-badge"
-// Removed Select components in favor of button groups for Service & Event
-import { Textarea } from "@/components/ui/textarea"
-import {
-  ArrowLeft,
-  Plus,
-  Trash2,
-  Zap,
-  Mail,
-  Database,
-  Webhook,
-  MessageSquare,
-  CreditCard,
-  FileText,
-  Bell,
-  Calendar,
-  Code,
-  MoreVertical,
-  AlertCircle,
-  CheckCircle,
-  MinusCircle,
-} from "lucide-react"
-import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu"
-import apiClient from "@/lib/api-client"
-import { cn } from "@/lib/utils"
-import useWorkflowCanvasStore, { WorkflowStep, StepConnection } from "@/stores/workflow-canvas-store"
+import React, { useRef, useCallback, useEffect, useMemo, useState, use } from "react"
+import { useWorkflowCanvasStore } from "@/stores/workflow-canvas-store"
+import { Node, Connection, Position, NodeType, NodeData, AIConfig } from "@/lib/types"
+import NodeComponent from "./node"
+import ConnectionComponent from "./connection"
+import { getBezierPath, distance, isPointNearLine } from "@/lib/utils"
+import { Plus, Minus, MousePointer2, Hand, Trash2, RotateCcw } from 'lucide-react'
+import canvasStyles from './canvas.module.css'
 
-interface WorkflowCanvasProps {
-  workflowId: string | null
-  onBack: () => void
+type ValidationIssue = { level: 'error' | 'warning'; message: string; field?: string }
+
+const getOutputAnchor = (node: Node, size: { width: number; height: number }, handleId?: string): Position => {
+  const baseY = node.position.y + size.height
+  let xRatio = 0.5
+  if (node.type === "condition") {
+    if (handleId === "output-true") xRatio = 0.25
+    else if (handleId === "output-false") xRatio = 0.75
+  }
+  return { x: node.position.x + size.width * xRatio, y: baseY }
 }
 
-export function WorkflowCanvas({ workflowId, onBack }: WorkflowCanvasProps) {
-  const id = useMemo(() => workflowId || "demo-canvas", [workflowId])
+const getInputAnchor = (node: Node, size: { width: number; height: number }): Position => {
+  return { x: node.position.x + size.width / 2, y: node.position.y }
+}
+
+const DEFAULT_FLOW_ID = "flow_cust_onboarding"
+
+export function Canvas() {
+  const INITIAL_NODES: Node[] = [
+    {
+      id: "start-1",
+      type: "start",
+      position: { x: 100, y: 300 },
+      data: { label: "Start", description: "Workflow trigger", icon: "start" },
+    },
+    {
+      id: "end-1",
+      type: "end",
+      position: { x: 900, y: 300 },
+      data: { label: "End", description: "Workflow completion", icon: "end" },
+    },
+  ]
+
+  const INITIAL_CONNECTIONS: Connection[] = [
+    {
+      id: "c-init-1",
+      source: "start-1",
+      sourceHandle: "output",
+      target: "end-1",
+      targetHandle: "input"
+    }
+  ]
+  
+
+  // State management from workflow-canvas-graph
+  const workflowId = useMemo(() => "demo-canvas", [])
   const store = useWorkflowCanvasStore()
-  const data = useWorkflowCanvasStore((s) => s.byId[id])
-
-  useEffect(() => {
-    store.init(id)
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [id])
-
-  const workflowName = data?.name ?? "Untitled Workflow"
-  const workflowStatus = (data?.status ?? "draft") as "draft" | "active"
-  const steps = (data?.steps ?? []) as WorkflowStep[]
-  const connections = (data?.connections ?? []) as StepConnection[]
-  const setWorkflowName = (name: string) => store.setName(id, name)
-  const setWorkflowStatus = (status: "draft" | "active") => store.setStatus(id, status)
-  const setSteps = (v: WorkflowStep[]) => store.setSteps(id, v)
-  const setConnections = (v: StepConnection[]) => store.setConnections(id, v)
-  const [isDeploying, setIsDeploying] = useState(false)
-  const [testRunning, setTestRunning] = useState(false)
-  const [defaultSenders, setDefaultSenders] = useState<{ messagingSender: string; smsSender: string; emailSender: string } | null>(null)
-  const [testErrors, setTestErrors] = useState<Array<{ stepId: string; field?: string; message: string; level: 'error'|'warning' }>>([])
-  const [lastRun, setLastRun] = useState<null | { counts: { triggers: number; schedules: number }; executions: Array<{ stepId: string; type: string; status: 'success'|'error'|'skipped'; result?: any; error?: any }> }>(null)
-  const [selectedStep, setSelectedStep] = useState<string | null>("step-1")
-  const [selectedConnection, setSelectedConnection] = useState<string | null>(null)
-
-  const getServiceIcon = (service: string) => {
-    switch (service) {
-      case "webhook":
-        return <Webhook className="h-5 w-5" />
-      case "email":
-        return <Mail className="h-5 w-5" />
-      case "database":
-        return <Database className="h-5 w-5" />
-      case "messaging":
-        return <MessageSquare className="h-5 w-5" />
-      case "payment":
-        return <CreditCard className="h-5 w-5" />
-      case "document":
-        return <FileText className="h-5 w-5" />
-      case "notification":
-        return <Bell className="h-5 w-5" />
-      case "scheduler":
-        return <Calendar className="h-5 w-5" />
-      case "api":
-        return <Code className="h-5 w-5" />
-      default:
-        return <Zap className="h-5 w-5" />
-    }
-  }
-
-  const getServiceName = (service: string) => {
-    const names: Record<string, string> = {
-      webhook: "HTTP Webhook",
-      email: "Email Service",
-      database: "Database",
-      messaging: "Messaging Service",
-      payment: "Payment Service",
-      document: "Document Service",
-      notification: "Notification Service",
-      scheduler: "Scheduler",
-      api: "API Service",
-    }
-    return names[service] || service
-  }
-
-  const defaultActionForService: Record<string, string> = {
-    webhook: "Form Submission Created",
-    email: "Send Email",
-    database: "Create Record",
-    messaging: "Send Message",
-    payment: "Create Payment",
-    document: "Generate PDF",
-    notification: "Send Push Notification",
-    scheduler: "Schedule Task",
-    api: "Call API Endpoint",
-  }
-
-  // Actions per service for the Event buttons
-  const actionsForService = (svc: string): string[] => {
-    switch (svc) {
-      case "webhook":
-        return ["Form Submission Created", "HTTP Request Received", "Webhook Triggered"]
-      case "email":
-        return ["Send Email", "Send Template Email", "Email Received"]
-      case "database":
-        return ["Create Record", "Update Record", "Find Records"]
-      case "messaging":
-        return ["Send Message", "Create Channel", "Post Update"]
-      case "payment":
-        return ["Create Payment", "Create Customer", "Process Refund"]
-      case "document":
-        return ["Generate PDF", "Parse Document", "Convert Format"]
-      case "notification":
-        return ["Send Push Notification", "Send SMS", "Send Alert"]
-      case "scheduler":
-        return ["Schedule Task", "Delay Execution", "Every Hour"]
-      case "api":
-        return ["Call API Endpoint", "Transform Data", "Validate Response"]
-      default:
-        return []
-    }
-  }
-
-  const addStepAt = (afterStepId: string | null) => {
-    const newStep: WorkflowStep = {
-      id: `step-${Date.now()}`,
-      type: "action",
-      service: "",
-      action: "Select the event",
-      config: {},
-      status: "incomplete",
-    }
-
-    if (afterStepId === null) {
-      // Add at the end
-      setSteps([...steps, newStep])
-      if (steps.length > 0) {
-        const lastStep = steps[steps.length - 1]
-        const newConnection: StepConnection = {
-          id: `conn-${Date.now()}`,
-          fromStep: lastStep.id,
-          toStep: newStep.id,
+  const data = useWorkflowCanvasStore((s) => s.byId[workflowId])
+  useEffect(() => { store.init(workflowId) }, [workflowId])
+  // Ensure all nodes have a data attribute, defaulting to INITIAL_NODES structure if missing
+  const nodes = useMemo(() => {
+    if (data?.steps) {
+      return data.steps.map((n, i) => {
+        // If node is missing data, use INITIAL_NODES fallback for start/end nodes
+        if (!n.data) {
+          const initial = INITIAL_NODES.find(init => init.id === n.id)
+          return initial
+            ? { ...n, data: initial.data }
+            : {
+                ...n,
+                data: {
+                  label: "Unnamed Node",
+                  description: n.type,
+                  icon: n.type
+                }
+              }
         }
-        setConnections([...connections, newConnection])
-      }
-    } else {
-      // Insert after specific step
-      const index = steps.findIndex((s) => s.id === afterStepId)
-      const newSteps = [...steps]
-      newSteps.splice(index + 1, 0, newStep)
-      setSteps(newSteps)
+        return n
+      })
+    }
+    return INITIAL_NODES
+  }, [data])
+  useEffect(() => { console.log("Nodes:", nodes) }, [nodes])
+  // Ensure start node is first and end node is last
+  const sortedNodes = useMemo(() => {
+    const startNodes = nodes.filter(n => n.type === "start")
+    const endNodes = nodes.filter(n => n.type === "end")
+    const middleNodes = nodes.filter(n => n.type !== "start" && n.type !== "end")
+    return [...startNodes, ...middleNodes, ...endNodes]
+  }, [nodes])
 
-      // Update connections
-      const existingConnection = connections.find((c) => c.fromStep === afterStepId)
-      if (existingConnection) {
-        // Update existing connection to point to new step
-        setConnections([
-          ...connections.filter((c) => c.id !== existingConnection.id),
-          { ...existingConnection, toStep: newStep.id },
-          {
-            id: `conn-${Date.now()}`,
-            fromStep: newStep.id,
-            toStep: existingConnection.toStep,
-          },
-        ])
-      } else {
-        // Create new connection
-        setConnections([
-          ...connections,
-          {
-            id: `conn-${Date.now()}`,
-            fromStep: afterStepId,
-            toStep: newStep.id,
-          },
-        ])
+  const connections = useMemo(() => {
+    const baseConnections = (data?.connections && JSON.stringify(data.connections) !== JSON.stringify(INITIAL_CONNECTIONS))
+      ? [...data.connections]
+      : [...INITIAL_CONNECTIONS]
+    const validNodeIds = new Set(nodes.map(n => n.id))
+    const filtered = baseConnections.filter(conn => validNodeIds.has(conn.source) && validNodeIds.has(conn.target))
+
+    const ensureConnection = (sourceId: string, targetId: string, id: string) => {
+      if (!filtered.some(conn => conn.source === sourceId && conn.target === targetId)) {
+        filtered.push({
+          id,
+          source: sourceId,
+          sourceHandle: "output",
+          target: targetId,
+          targetHandle: "input",
+        })
       }
     }
 
-    setSelectedStep(newStep.id)
-    setSelectedConnection(null)
-  }
+    const startNode = nodes.find(n => n.type === "start")
+    const endNode = nodes.find(n => n.type === "end")
 
-  const removeStep = (stepId: string) => {
-    const stepIndex = steps.findIndex((s) => s.id === stepId)
-    if (stepIndex === 0) return // Can't remove trigger
+    if (startNode && endNode) {
+      const hasStartOutgoing = filtered.some(conn => conn.source === startNode.id)
+      if (!hasStartOutgoing) {
+        ensureConnection(startNode.id, endNode.id, `c-init-${startNode.id}-to-${endNode.id}`)
+      }
+      const hasEndIncoming = filtered.some(conn => conn.target === endNode.id)
+      if (!hasEndIncoming) {
+        ensureConnection(startNode.id, endNode.id, `c-init-${startNode.id}-to-${endNode.id}-fallback`)
+      }
+    }
 
-    const newSteps = steps.filter((s) => s.id !== stepId)
-    setSteps(newSteps)
-
-    // Update connections
-    const incomingConn = connections.find((c) => c.toStep === stepId)
-    const outgoingConn = connections.find((c) => c.fromStep === stepId)
-
-    const newConnections = connections.filter((c) => c.fromStep !== stepId && c.toStep !== stepId)
-
-    if (incomingConn && outgoingConn) {
-      // Bridge the gap
-      newConnections.push({
-        id: `conn-${Date.now()}`,
-        fromStep: incomingConn.fromStep,
-        toStep: outgoingConn.toStep,
-        description: incomingConn.description || outgoingConn.description,
+    if (endNode) {
+      nodes.forEach(node => {
+        if (node.id === endNode.id) return
+        const hasOutgoing = filtered.some(conn => conn.source === node.id)
+        if (!hasOutgoing) {
+          ensureConnection(node.id, endNode.id, `auto-${node.id}-to-${endNode.id}`)
+        }
       })
     }
 
-    setConnections(newConnections)
-    if (selectedStep === stepId) setSelectedStep(null)
-  }
+    return filtered
+  }, [data, nodes])
 
-  const updateStep = (stepId: string, updates: Partial<WorkflowStep>) => {
-    setSteps(steps.map((step) => (step.id === stepId ? { ...step, ...updates } : step)))
-  }
+  useEffect(() => { console.log("Connections:", connections) }, [connections])
+  const setNodes = useCallback((v: Node[]) => store.setSteps(workflowId, v), [store, workflowId])
+  const setConnections = useCallback((v: Connection[]) => store.setConnections(workflowId, v), [store, workflowId])
+  const [scale, setScale] = useState(1)
+  const [offset, setOffset] = useState<Position>({ x: 0, y: 0 })
+  const [isDraggingCanvas, setIsDraggingCanvas] = useState(false)
+  const [dragStart, setDragStart] = useState<Position>({ x: 0, y: 0 })
+  
+  // Node dragging state
+  const [draggingNodeId, setDraggingNodeId] = useState<string | null>(null)
+  const [nodeDragOffset, setNodeDragOffset] = useState<Position>({ x: 0, y: 0 })
 
-  const updateConnection = (connectionId: string, description: string) => {
-    setConnections(connections.map((conn) => (conn.id === connectionId ? { ...conn, description } : conn)))
-  }
+  // Connection creation state
+  const [connectingNodeId, setConnectingNodeId] = useState<string | null>(null)
+  const [connectingHandleId, setConnectingHandleId] = useState<string | null>(null)
+  const [mousePos, setMousePos] = useState<Position>({ x: 0, y: 0 })
 
-  const selectedStepData = steps.find((s) => s.id === selectedStep)
-  const selectedConnectionData = connections.find((c) => c.id === selectedConnection)
+  // Measured sizes for nodes (filled by Node components)
+  const [nodeSizes, setNodeSizes] = useState<Record<string, { width: number, height: number }>>({})
 
-  const handleDeploy = async () => {
-    try {
-      setIsDeploying(true)
-      const flowId = id || `flow_${Date.now()}`
-      // Validate before run
-      const result = validateWorkflow()
-      if (!result.ok) {
-        // Mark statuses and show toast same as test run
-        const errorIds = new Set(result.errors.filter(e => e.level === 'error').map(e => e.stepId))
-        const newSteps = steps.map(s => errorIds.has(s.id) ? { ...s, status: 'error' as const } : { ...s, status: 'configured' as const })
-        setSteps(newSteps)
-        import('sonner').then(({ toast }) => {
-          const errorCount = result.errors.filter(e=>e.level==='error').length
-          const warnCount = result.warnings
-          toast.error(`Fix validation issues: ${errorCount} error${errorCount!==1?'s':''}${warnCount>0?`, ${warnCount} warning${warnCount!==1?'s':''}`:''}`)
-        })
-        return
-      }
-      // Run flow: load triggers
-      const payload = { steps, connections }
-      try {
-        const ran = await apiClient.runFlow(flowId, payload)
-        setLastRun({ counts: ran.counts, executions: (ran as any).executions || [] })
-        setWorkflowStatus("active")
-        import('sonner').then(({ toast }) => {
-          toast.success('Flow started', { description: `Loaded ${ran.counts.triggers} trigger(s) and ${ran.counts.schedules} schedule(s).` })
-          const skipped = ((ran as any).executions || []).filter((e: any) => e.status === 'skipped')
-          if (skipped.length > 0) {
-            toast.warning(`Some actions were skipped`, {
-              description: `Configure provider keys/connections or missing fields. Skipped: ${skipped.length}`
-            })
-          }
-        })
-      } catch (err: any) {
-        const status = err?.response?.status
-        if (status === 404) {
-          import('sonner').then(({ toast }) => {
-            toast.error('Backend missing /run endpoint', { description: 'Rebuild and restart the API container to pick up the new route.' })
-          })
-        }
-        throw err
-      }
-    } catch (e) {
-      // Best-effort: in demo mode this always succeeds, otherwise keep draft
-    } finally {
-      setIsDeploying(false)
+  // Selection state
+  const [selectedNodes, setSelectedNodes] = useState<Set<string>>(new Set())
+  const [hoveredNodeId, setHoveredNodeId] = useState<string | null>(null)
+  const [validationIssuesByNode, setValidationIssuesByNode] = useState<Record<string, ValidationIssue[]>>({})
+  const [validationSummary, setValidationSummary] = useState<{ errors: number; warnings: number } | null>(null)
+  const [previewLoading, setPreviewLoading] = useState(false)
+  const [previewNodeId, setPreviewNodeId] = useState<string | null>(null)
+
+  const canvasRef = useRef<HTMLDivElement>(null)
+
+  // --- Helpers ---
+
+  const screenToCanvas = useCallback((screenX: number, screenY: number) => {
+    if (!canvasRef.current) return { x: 0, y: 0 }
+    const rect = canvasRef.current.getBoundingClientRect()
+    return {
+      x: (screenX - rect.left - offset.x) / scale,
+      y: (screenY - rect.top - offset.y) / scale,
     }
-  }
+  }, [offset, scale])
 
-  const validateWorkflow = () => {
-  const errors: Array<{ stepId: string; field?: string; message: string; level: 'error'|'warning' }> = []
+  // --- Event Handlers ---
+
+  const handleWheel = useCallback((e: React.WheelEvent) => {
+    if (e.ctrlKey || e.metaKey) {
+      e.preventDefault()
+      const zoomSensitivity = 0.001
+      const newScale = Math.min(Math.max(0.1, scale - e.deltaY * zoomSensitivity), 3)
+      
+      // Zoom towards mouse pointer
+      const rect = canvasRef.current!.getBoundingClientRect()
+      const mouseX = e.clientX - rect.left
+      const mouseY = e.clientY - rect.top
+      
+      const scaleDiff = newScale - scale
+      const offsetX = offset.x - (mouseX - offset.x) * (scaleDiff / scale)
+      const offsetY = offset.y - (mouseY - offset.y) * (scaleDiff / scale)
+
+      setScale(newScale)
+      setOffset({ x: offsetX, y: offsetY })
+    } else {
+      setOffset(prev => ({ x: prev.x - e.deltaX, y: prev.y - e.deltaY }))
+    }
+  }, [scale, offset])
+
+  const handleMouseDown = useCallback((e: React.MouseEvent) => {
+    // Middle mouse or Space+Click to pan
+    if (e.button === 1 || (e.button === 0 && e.shiftKey)) {
+      setIsDraggingCanvas(true)
+      setDragStart({ x: e.clientX, y: e.clientY })
+      return
+    }
+    
+    // Click on canvas clears selection
+    if (e.target === canvasRef.current) {
+      setSelectedNodes(new Set())
+    }
+  }, [])
+
+  const handleMouseMove = useCallback((e: React.MouseEvent) => {
+    const canvasPos = screenToCanvas(e.clientX, e.clientY)
+    setMousePos(canvasPos)
+
+    if (isDraggingCanvas) {
+      const dx = e.clientX - dragStart.x
+      const dy = e.clientY - dragStart.y
+      setOffset(prev => ({ x: prev.x + dx, y: prev.y + dy }))
+      setDragStart({ x: e.clientX, y: e.clientY })
+    }
+
+    if (draggingNodeId) {
+      const updatedNodes = nodes.map((node: Node) => {
+        if (node.id === draggingNodeId) {
+          return {
+            ...node,
+            position: {
+              x: canvasPos.x - nodeDragOffset.x,
+              y: canvasPos.y - nodeDragOffset.y
+            }
+          }
+        }
+        return node
+      })
+      setNodes(updatedNodes)
+    }
+  }, [isDraggingCanvas, dragStart, draggingNodeId, nodeDragOffset, screenToCanvas])
+
+  const validateWorkflow = useCallback(() => {
+    const issuesByNode: Record<string, ValidationIssue[]> = {}
+    const pushIssue = (nodeId: string, issue: ValidationIssue) => {
+      issuesByNode[nodeId] = [...(issuesByNode[nodeId] || []), issue]
+    }
+
     const emailRegex = /^[^@\s]+@[^@\s]+\.[^@\s]+$/
     const phoneRegex = /^\+?[0-9]{7,15}$/
 
-    // Basic structural checks
-    if (steps.length === 0) {
-      errors.push({ stepId: 'global', message: 'Workflow has no steps', level: 'error' })
-    }
-    const trigger = steps[0]
-    if (trigger?.type !== 'trigger') {
-      errors.push({ stepId: trigger?.id || 'global', message: 'First step must be a trigger', level: 'error' })
+    if (nodes.length === 0) {
+      pushIssue('global', { level: 'error', message: 'Workflow has no steps' })
     }
 
-    // Map for inbound connections
+    const triggerNode = nodes.find(n => n.type === 'trigger' || n.type === 'start')
+    if (!triggerNode) {
+      pushIssue('global', { level: 'error', message: 'Add a trigger/start node as the first step' })
+    }
+
     const inboundCounts: Record<string, number> = {}
-    connections.forEach(c => { inboundCounts[c.toStep] = (inboundCounts[c.toStep] || 0) + 1 })
+    connections.forEach(conn => {
+      inboundCounts[conn.target] = (inboundCounts[conn.target] || 0) + 1
+    })
 
-    steps.forEach(step => {
-      // Non-trigger should have at least one inbound connection
-      if (step.type === 'action' && !inboundCounts[step.id]) {
-        errors.push({ stepId: step.id, message: 'Action step has no incoming connection', level: 'error' })
+    nodes.forEach(node => {
+      if (node.type === 'action' && !inboundCounts[node.id]) {
+        pushIssue(node.id, { level: 'error', message: 'Action has no incoming connection' })
       }
-      // Messaging/email validations
-      const isMessaging = (step.service === 'messaging' && step.action === 'Send Message')
-        || (step.service === 'notification' && step.action === 'Send SMS')
-        || (step.service === 'email' && (step.action === 'Send Email' || step.action === 'Send Template Email'))
-      if (isMessaging) {
-        const cfg: any = step.config || {}
-        // Sender intentionally ignored for test run validation
-        if (!cfg.receiver) errors.push({ stepId: step.id, field: 'receiver', message: 'Receiver is required', level: 'error' })
-        if (!cfg.body) errors.push({ stepId: step.id, field: 'body', message: 'Message body is required', level: 'error' })
-        if (step.service === 'email') {
-          if (cfg.receiver && !emailRegex.test(cfg.receiver)) errors.push({ stepId: step.id, field: 'receiver', message: 'Invalid email address', level: 'error' })
-        } else {
-          // Treat as phone if not email
-          if (cfg.receiver && !emailRegex.test(cfg.receiver) && !phoneRegex.test(cfg.receiver)) errors.push({ stepId: step.id, field: 'receiver', message: 'Receiver phone looks invalid', level: 'warning' })
+
+      const actionObj = typeof node.action === 'object' ? (node.action as any) : undefined
+      const params = actionObj?.parameters || {}
+
+      const isMessaging = actionObj?.type === 'send_message' || (node.service === 'messaging' && node.action === 'Send Message')
+      const isSms = actionObj?.type === 'send_message' || (node.service === 'notification' && node.action === 'Send SMS')
+      const isEmail = actionObj?.type === 'send_email' || (node.service === 'email' && (node.action === 'Send Email' || node.action === 'Send Template Email'))
+
+      if (isMessaging || isSms) {
+        const receiver = params.recipient_id || params.receiver || (node as any).config?.receiver
+        const body = params.message_content || params.body || (node as any).config?.body
+        if (!receiver) pushIssue(node.id, { level: 'error', message: 'Receiver is required' })
+        if (!body) pushIssue(node.id, { level: 'error', message: 'Message body is required' })
+        if (receiver && !phoneRegex.test(receiver) && !emailRegex.test(receiver)) {
+          pushIssue(node.id, { level: 'warning', message: 'Receiver format looks invalid (expect E.164 phone or email)' })
         }
       }
-      // Scheduler validations
-      if (step.service === 'scheduler' && step.action === 'Schedule Task') {
-        const cfg: any = step.config || {}
-        if (!cfg.calendarDate) errors.push({ stepId: step.id, field: 'calendarDate', message: 'Date is required', level: 'error' })
-        if (!cfg.startTime) errors.push({ stepId: step.id, field: 'startTime', message: 'Start time is required', level: 'error' })
-        if (!cfg.endTime) errors.push({ stepId: step.id, field: 'endTime', message: 'End time is required', level: 'error' })
-        if (cfg.start && cfg.end) {
-          const startMs = Date.parse(cfg.start)
-          const endMs = Date.parse(cfg.end)
-            if (!isNaN(startMs) && !isNaN(endMs) && endMs <= startMs) {
-              errors.push({ stepId: step.id, field: 'endTime', message: 'End must be after start', level: 'error' })
-            }
-        }
-        if (!cfg.timezone) errors.push({ stepId: step.id, field: 'timezone', message: 'Timezone is recommended', level: 'warning' })
+
+      if (isEmail) {
+        const receiver = params.to_email || params.receiver || (node as any).config?.receiver
+        const body = params.body || (node as any).config?.body
+        const subject = params.subject || (node as any).config?.subject
+        if (!receiver) pushIssue(node.id, { level: 'error', message: 'Email recipient is required' })
+        if (receiver && !emailRegex.test(receiver)) pushIssue(node.id, { level: 'error', message: 'Email recipient is invalid' })
+        if (!body) pushIssue(node.id, { level: 'error', message: 'Email body is required' })
+        if (!subject) pushIssue(node.id, { level: 'warning', message: 'Email subject is recommended' })
+      }
+
+      if (node.data?.agentId) {
+        const prompt = node.data?.aiConfig?.prompt?.trim()
+        if (!prompt) pushIssue(node.id, { level: 'warning', message: 'Linked agent has no prompt; output may be generic' })
       }
     })
-    const warnings = errors.filter(e => e.level === 'warning').length
-    const fatal = errors.filter(e => e.level === 'error').length
-    return { ok: fatal === 0, errors, warnings }
-  }
 
-  const handleTestRun = () => {
-    setTestRunning(true)
-    try {
-      const result = validateWorkflow()
-      const errorIds = new Set(result.errors.filter(e => e.level === 'error').map(e => e.stepId))
-      const newSteps = steps.map(s => {
-        if (errorIds.has(s.id)) return { ...s, status: 'error' as const }
-        return { ...s, status: 'configured' as const }
-      })
-      setSteps(newSteps)
-      setTestErrors(result.errors)
-      // Toast notifications
-      import('sonner').then(({ toast }) => {
-        if (result.ok) {
-          toast.success('Workflow validation passed', { description: 'All checks succeeded. Ready to deploy.' })
-        } else {
-          const errorCount = result.errors.filter(e=>e.level==='error').length
-          const warnCount = result.warnings
-          const firstError = result.errors.find(e=>e.level==='error')
-          const summary = `${errorCount} error${errorCount!==1?'s':''}${warnCount>0?`, ${warnCount} warning${warnCount!==1?'s':''}`:''}`
-          toast.error(`Validation failed: ${summary}`, { description: firstError ? `${firstError.stepId}: ${firstError.message}` : 'Check configuration.' })
-          if (warnCount > 0) {
-            const firstWarn = result.errors.find(e=>e.level==='warning')
-            if (firstWarn) {
-              toast.warning(`Warning: ${firstWarn.stepId}`, { description: firstWarn.message })
-            }
-          }
-        }
-      })
-    } finally {
-      setTestRunning(false)
+    const errors = Object.values(issuesByNode).flat().filter(i => i.level === 'error').length
+    const warnings = Object.values(issuesByNode).flat().filter(i => i.level === 'warning').length
+
+    return {
+      ok: errors === 0,
+      errors,
+      warnings,
+      issuesByNode,
     }
-  }
+  }, [nodes, connections])
 
-  // Fetch default senders once
-  useEffect(() => {
-    let mounted = true
-    import('@/lib/api-client').then(({ apiClient }) => {
-      apiClient.getDefaultSenders().then(data => { if (mounted) setDefaultSenders(data) }).catch(() => {})
+  const handleMouseUp = useCallback(() => {
+    setIsDraggingCanvas(false)
+    setDraggingNodeId(null)
+    
+    // If we were connecting, check if we dropped on a valid target
+    if (connectingNodeId) {
+      // Hit testing is handled in onPortMouseUp usually, but if we release on canvas, cancel
+      setConnectingNodeId(null)
+      setConnectingHandleId(null)
+    }
+  }, [connectingNodeId])
+
+  const handleValidate = useCallback(async () => {
+    const result = validateWorkflow()
+    setValidationIssuesByNode(result.issuesByNode)
+    setValidationSummary({ errors: result.errors, warnings: result.warnings })
+    const { toast } = await import('sonner')
+    if (result.ok) {
+      toast.success('Workflow validation passed', { description: result.warnings ? `${result.warnings} warning${result.warnings === 1 ? '' : 's'} to review` : 'All checks succeeded.' })
+    } else {
+      const firstIssue = Object.entries(result.issuesByNode).find(([key, list]) => key !== 'global' && list.some(l => l.level === 'error'))
+      const message = firstIssue?.[1]?.find(i => i.level === 'error')?.message
+        || result.issuesByNode['global']?.find(i => i.level === 'error')?.message
+        || 'Check node configuration.'
+      toast.error(`Validation failed: ${result.errors} error${result.errors === 1 ? '' : 's'}`, { description: message })
+    }
+  }, [validateWorkflow])
+
+  // --- Node Interaction ---
+
+  const handleNodeDragStart = useCallback((e: React.MouseEvent, id: string) => {
+    if (e.button !== 0) return
+    e.stopPropagation()
+    const canvasPos = screenToCanvas(e.clientX, e.clientY)
+    const node = nodes.find(n => n.id === id)
+    if (node) {
+      setDraggingNodeId(id)
+      setNodeDragOffset({
+        x: canvasPos.x - node.position.x,
+        y: canvasPos.y - node.position.y
+      })
+      setSelectedNodes(new Set([id]))
+    }
+  }, [nodes, screenToCanvas])
+
+  const handleNodeDataChange = useCallback((id: string, newData: Partial<NodeData>) => {
+    const updatedNodes = nodes.map((node: Node) => {
+      if (node.id !== id) return node
+      const mergedData = { ...node.data, ...newData }
+      const actionValue = mergedData.action || node.action
+      return {
+        ...node,
+        data: mergedData,
+        action: actionValue,
+      }
     })
-    return () => { mounted = false }
+    setNodes(updatedNodes)
+  }, [nodes])
+
+  const handlePortMouseDown = useCallback((e: React.MouseEvent, nodeId: string, type: "input" | "output", handleId: string = "output") => {
+    e.stopPropagation()
+    if (type === "output") {
+      setConnectingNodeId(nodeId)
+      setConnectingHandleId(handleId)
+    }
   }, [])
 
-  // Auto-apply default sender to all relevant steps when defaults are fetched, but allow user override per step
-  useEffect(() => {
-    if (!defaultSenders) return
-    const updated = steps.map((s) => {
-      const isMsg = (s.service === 'messaging' && s.action === 'Send Message')
-        || (s.service === 'notification' && s.action === 'Send SMS')
-        || (s.service === 'email' && (s.action === 'Send Email' || s.action === 'Send Template Email'))
-      if (!isMsg) return s
-      const cfg: any = s.config || {}
-      // Respect explicit override flag; if not overriding and no sender set, apply defaults
-      const override = cfg.overrideSender === true || cfg.overrideSender === 'true'
-      if (!override && !cfg.sender) {
-        let value = ''
-        if (s.service === 'messaging') value = defaultSenders.messagingSender
-        else if (s.service === 'notification') value = defaultSenders.smsSender
-        else if (s.service === 'email') value = defaultSenders.emailSender
-        return { ...s, config: { ...cfg, sender: value } }
-      }
-      return s
+  const handleMeasure = useCallback((id: string, size: { width: number, height: number }) => {
+    setNodeSizes(prev => {
+      const prevSize = prev[id]
+      if (prevSize && prevSize.width === size.width && prevSize.height === size.height) return prev
+      return { ...prev, [id]: size }
     })
-    if (JSON.stringify(updated) !== JSON.stringify(steps)) setSteps(updated)
-  }, [defaultSenders])
+  }, [])
+
+  const handlePortMouseUp = useCallback((e: React.MouseEvent, nodeId: string, type: "input" | "output") => {
+    e.stopPropagation()
+    if (connectingNodeId && type === "input" && connectingNodeId !== nodeId) {
+      const sourceHandle = connectingHandleId || "output"
+      const newConnection: Connection = {
+        id: `c-${Date.now()}`,
+        source: connectingNodeId,
+        sourceHandle,
+        target: nodeId,
+        targetHandle: "input"
+      }
+      
+      const exists = connections.some(c => 
+        c.source === newConnection.source && c.target === newConnection.target && c.sourceHandle === newConnection.sourceHandle
+      )
+      if (!exists) {
+        const filtered = connections.filter(c => !(c.source === connectingNodeId && c.sourceHandle === sourceHandle))
+        setConnections([...filtered, newConnection])
+      }
+    }
+    setConnectingNodeId(null)
+    setConnectingHandleId(null)
+  }, [connectingNodeId, connectingHandleId, connections])
+
+  // --- Drag & Drop from Sidebar ---
+
+  const handleDragOver = useCallback((e: React.DragEvent) => {
+    e.preventDefault()
+    e.dataTransfer.dropEffect = "move"
+  }, [])
+
+  const handleDrop = useCallback((e: React.DragEvent) => {
+    e.preventDefault()
+    const data = e.dataTransfer.getData("application/reactflow")
+    if (!data) return
+
+    const { type, label } = JSON.parse(data)
+    const pos = screenToCanvas(e.clientX, e.clientY)
+
+    const newNode: Node = {
+      id: `node-${Date.now()}`,
+      type,
+      position: { x: pos.x - 128, y: pos.y - 40 }, // Center the node
+      data: { label, description: "New node" }
+    }
+
+    // Auto-rewire logic: Check if dropped on a connection
+      const droppedOnConnection = connections.find(conn => {
+      const sourceNode = nodes.find(n => n.id === conn.source)
+      const targetNode = nodes.find(n => n.id === conn.target)
+      if (!sourceNode || !targetNode) return false
+
+      // Simple bounding box check + distance check
+      // Center of the new node
+      const center = { x: newNode.position.x + 128, y: newNode.position.y + 40 }
+      
+      // Use measured node sizes when available for anchor computation
+      const srcSize = nodeSizes[sourceNode.id] || { width: 256, height: 80 }
+      const tgtSize = nodeSizes[targetNode.id] || { width: 256, height: 80 }
+      // Source output pos: bottom-center of source node
+      const start = getOutputAnchor(sourceNode, srcSize, conn.sourceHandle)
+      // Target input pos: top-center of target node
+      const end = getInputAnchor(targetNode, tgtSize)
+
+      return isPointNearLine(center, start, end, 50) // 50px threshold
+    })
+
+    if (droppedOnConnection) {
+      // Break connection and insert new node
+      const newConn1: Connection = {
+        id: `c-${Date.now()}-1`,
+        source: droppedOnConnection.source,
+        sourceHandle: "output",
+        target: newNode.id,
+        targetHandle: "input"
+      }
+      const newConn2: Connection = {
+        id: `c-${Date.now()}-2`,
+        source: newNode.id,
+        sourceHandle: "output",
+        target: droppedOnConnection.target,
+        targetHandle: "input"
+      }
+
+      const filtered = connections.filter((c: Connection) => c.id !== droppedOnConnection.id)
+      setConnections(filtered.concat([newConn1, newConn2]))
+    } else {
+      // If not dropped on a connection, check if we should auto-connect to the selected node
+      if (selectedNodes.size === 1) {
+        const selectedId = Array.from(selectedNodes)[0]
+        const selectedNode = nodes.find(n => n.id === selectedId)
+        
+        // If selected node is not an End node, connect it to the new node
+        if (selectedNode && selectedNode.type !== "end") {
+           const newConn: Connection = {
+            id: `c-${Date.now()}-auto`,
+            source: selectedId,
+            sourceHandle: "output",
+            target: newNode.id,
+            targetHandle: "input"
+          }
+          setConnections([...connections, newConn])
+        }
+      }
+    }
+
+    setNodes([...nodes, newNode])
+    // Select the new node
+    setSelectedNodes(new Set([newNode.id]))
+  }, [screenToCanvas, connections, nodes, selectedNodes])
+
+  // --- Deletion ---
+  
+  const deleteSelected = useCallback(() => {
+    const selectedIds = Array.from(selectedNodes)
+    if (selectedIds.length === 0) return
+
+    // Filter out Start and End nodes from deletion
+    const nodesToDelete = selectedIds.filter(id => {
+      const node = nodes.find(n => n.id === id)
+      return node && node.type !== "start" && node.type !== "end"
+    })
+
+    if (nodesToDelete.length === 0) return
+
+    // Auto-reconnect logic before deleting
+    // For each deleted node, find its input source and output target
+    // If it has exactly one input and one output, connect them
+    let newConnections = [...connections]
+    
+    nodesToDelete.forEach(nodeId => {
+      const inputs = connections.filter(c => c.target === nodeId)
+      const outputs = connections.filter(c => c.source === nodeId)
+      
+      // Remove connections attached to this node
+      newConnections = newConnections.filter(c => c.source !== nodeId && c.target !== nodeId)
+
+      // If simple 1-in-1-out, reconnect
+      if (inputs.length === 1 && outputs.length === 1) {
+        const sourceId = inputs[0].source
+        const targetId = outputs[0].target
+        
+        // Don't create duplicate connections
+        if (!newConnections.some(c => c.source === sourceId && c.target === targetId)) {
+          newConnections.push({
+            id: `c-reconnect-${Date.now()}`,
+            source: sourceId,
+            sourceHandle: "output",
+            target: targetId,
+            targetHandle: "input"
+          })
+        }
+      }
+    })
+
+    setConnections(newConnections)
+    setNodes(nodes.filter((n: Node) => !nodesToDelete.includes(n.id)))
+    setSelectedNodes(new Set())
+  }, [selectedNodes, connections, nodes])
+
+  // Keyboard shortcuts
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      const active = document.activeElement as HTMLElement | null
+      const isInput = active && (active.tagName === "INPUT" || active.tagName === "TEXTAREA" || active.getAttribute("contenteditable") === "true")
+      if ((e.key === "Delete" || e.key === "Backspace") && !isInput) {
+        e.preventDefault()
+        deleteSelected()
+      }
+    }
+    window.addEventListener("keydown", handleKeyDown)
+    return () => window.removeEventListener("keydown", handleKeyDown)
+  }, [deleteSelected])
+
+  // --- Path Highlighting ---
+  // Find all upstream and downstream nodes from hoveredNodeId
+  const getConnectedNodes = (nodeId: string) => {
+    const connected = new Set<string>()
+    const traverse = (currentId: string, direction: "up" | "down") => {
+      connected.add(currentId)
+      const relevantConns = connections.filter(c => 
+        direction === "up" ? c.target === currentId : c.source === currentId
+      )
+      relevantConns.forEach(c => {
+        const nextId = direction === "up" ? c.source : c.target
+        if (!connected.has(nextId)) traverse(nextId, direction)
+      })
+    }
+    traverse(nodeId, "up")
+    traverse(nodeId, "down")
+    return connected
+  }
+
+  const highlightedNodes = hoveredNodeId ? getConnectedNodes(hoveredNodeId) : new Set()
+
+  const inferProviderFromModel = useCallback((model?: string) => {
+    if (!model) return undefined
+    const normalized = model.toLowerCase()
+    if (normalized.startsWith("claude") || normalized.includes("anthropic")) return "anthropic"
+    if (normalized.startsWith("gemini") || normalized.includes("google")) return "google"
+    return "openai"
+  }, [])
+
+  const buildStepFromNode = useCallback((n: Node) => {
+    const nodeData = (n.data || {}) as NodeData
+    const actionObj = typeof n.action === "object"
+      ? (n.action as any)
+      : typeof nodeData.action === "object"
+        ? (nodeData.action as any)
+        : undefined
+
+    let service = "custom"
+    let action = "Custom Action"
+    let config: Record<string, any> = {}
+
+    if (actionObj?.type === "send_message") {
+      service = "notification"
+      action = "Send SMS"
+      config = {
+        receiver: actionObj?.parameters?.recipient_id,
+        body: actionObj?.parameters?.message_content,
+      }
+    } else if (actionObj?.type === "send_email") {
+      service = "email"
+      action = "Send Email"
+      config = {
+        receiver: actionObj?.parameters?.to_email,
+        subject: actionObj?.parameters?.subject,
+        body: actionObj?.parameters?.body,
+      }
+    }
+
+    if (nodeData.aiConfig?.language) {
+      config = {
+        ...config,
+        language: nodeData.aiConfig.language,
+      }
+    }
+
+    if (nodeData.agentId) {
+      service = service === "custom" ? "ai-agent" : service
+      action = action === "Custom Action" ? "Generate Content" : action
+      const provider = nodeData.aiConfig?.provider || inferProviderFromModel(nodeData.aiConfig?.model)
+      config = {
+        ...config,
+        agentId: nodeData.agentId,
+        agentPrompt: nodeData.aiConfig?.prompt ?? "",
+        agentModel: nodeData.aiConfig?.model ?? "",
+        language: nodeData.aiConfig?.language || nodeData.language || 'en-US',
+        agentLanguage: nodeData.aiConfig?.language || nodeData.language || 'en-US',
+        autoEvents: nodeData.events ?? [],
+        agentTemperature: nodeData.aiConfig?.temperature,
+        agentMaxTokens: nodeData.aiConfig?.maxTokens,
+        agentProvider: provider,
+      }
+    }
+
+    return {
+      id: n.id,
+      type: "action",
+      service,
+      action,
+      config: {
+        ...config,
+        nodeLabel: nodeData.label,
+        nodeDescription: nodeData.description,
+      },
+    }
+  }, [inferProviderFromModel])
+
+  // --- Workflow Run Integration ---
+  const [runStatus, setRunStatus] = useState<string>("")
+  // Use apiClient.runFlow to run workflow
+  // Import apiClient
+  // @ts-ignore
+  // eslint-disable-next-line
+  const { apiClient } = require("@/lib/api-client")
+  const handleRunWorkflow = async () => {
+    setRunStatus("Running...");
+    try {
+      const validation = validateWorkflow()
+      setValidationIssuesByNode(validation.issuesByNode)
+      setValidationSummary({ errors: validation.errors, warnings: validation.warnings })
+      if (!validation.ok) {
+        const { toast } = await import('sonner')
+        toast.error('Fix validation errors before running', { description: `${validation.errors} error${validation.errors === 1 ? '' : 's'} detected.` })
+        setRunStatus('Validation failed')
+        return
+      }
+      // Build workflow steps for backend
+      const steps = nodes
+        .filter(n => n.type !== "start" && n.type !== "end")
+        .map(buildStepFromNode)
+      // console.log("Workflow steps to run:", steps);
+      // Use connections from state
+      const result = await apiClient.runFlow(DEFAULT_FLOW_ID, { steps, connections });
+      if (result.ok) {
+        setRunStatus("Workflow executed successfully!");
+      } else {
+        setRunStatus("Error: " + (result.error || "Unknown error"));
+      }
+    } catch (e: any) {
+      setRunStatus("Error: " + (e?.message || "Unknown error"));
+    }
+  }
+
+  const handleFillAgentContent = useCallback(async (nodeId: string) => {
+    const node = nodes.find(n => n.id === nodeId)
+    if (!node || node.type !== "action") return
+
+    const step = buildStepFromNode(node)
+    const agentId = (step.config as any)?.agentId
+    if (!agentId) {
+      const { toast } = await import('sonner')
+      toast.error('Select an AI agent before filling.', { description: 'Pick an agent in the node configuration to generate output.' })
+      return
+    }
+
+    const channel: 'sms' | 'whatsapp' | 'email' = step.service === 'email'
+      ? 'email'
+      : step.service === 'messaging'
+        ? 'whatsapp'
+        : 'sms'
+
+    try {
+      setPreviewNodeId(nodeId)
+      setPreviewLoading(true)
+      const response = await apiClient.previewAgent({
+        flowId: DEFAULT_FLOW_ID,
+        nodeId,
+        channel,
+        step,
+      })
+      const body = response.body || ''
+      const subject = response.subject
+      const updatedNodes = nodes.map(n => {
+        if (n.id !== nodeId) return n
+        const existingData = (n.data || {}) as NodeData
+        let actionConfig: any = typeof n.action === 'object' ? { ...(n.action as any) } : undefined
+        if (!actionConfig && typeof existingData.action === 'object') {
+          actionConfig = { ...(existingData.action as any) }
+        }
+        if (!actionConfig) {
+          actionConfig = channel === 'email'
+            ? { type: 'send_email', parameters: {} }
+            : { type: 'send_message', parameters: {} }
+        }
+        const parameters = { ...(actionConfig.parameters || {}) }
+        if (channel === 'email') {
+          parameters.body = body
+          if (typeof subject === 'string' && subject.length > 0) {
+            parameters.subject = subject
+          }
+        } else {
+          parameters.message_content = body
+          parameters.body = body
+        }
+        const updatedAction = { ...actionConfig, parameters }
+        const updatedAiConfig = { ...(existingData.aiConfig || {}) }
+        if (response.agentModel) {
+          updatedAiConfig.model = response.agentModel
+        }
+        if (response.agentProvider) {
+          updatedAiConfig.provider = response.agentProvider
+        }
+        if (response.agentLanguage) {
+          updatedAiConfig.language = response.agentLanguage
+        }
+        const mergedAiConfig: AIConfig = {
+          model: updatedAiConfig.model || existingData.aiConfig?.model || 'gpt-4o',
+          temperature: typeof updatedAiConfig.temperature === 'number'
+            ? updatedAiConfig.temperature
+            : typeof existingData.aiConfig?.temperature === 'number'
+              ? existingData.aiConfig.temperature
+              : 0.7,
+          maxTokens: typeof updatedAiConfig.maxTokens === 'number'
+            ? updatedAiConfig.maxTokens
+            : typeof existingData.aiConfig?.maxTokens === 'number'
+              ? existingData.aiConfig.maxTokens
+              : 1000,
+          prompt: typeof updatedAiConfig.prompt === 'string'
+            ? updatedAiConfig.prompt
+            : existingData.aiConfig?.prompt || '',
+          evaluateLeadState: Boolean(updatedAiConfig.evaluateLeadState ?? existingData.aiConfig?.evaluateLeadState),
+          provider: updatedAiConfig.provider || existingData.aiConfig?.provider,
+          language: updatedAiConfig.language || existingData.aiConfig?.language || existingData.language || 'en-US',
+        }
+        return {
+          ...n,
+          action: updatedAction,
+          data: {
+            ...existingData,
+            action: updatedAction,
+            language: response.agentLanguage || existingData.language,
+            aiConfig: mergedAiConfig,
+          },
+        }
+      })
+      setNodes(updatedNodes)
+      const { toast } = await import('sonner')
+      toast.success('Content filled from agent', { description: channel === 'email' ? 'Subject and body updated.' : 'Message body updated.' })
+    } catch (error: any) {
+      const message = error?.response?.data?.error || error?.message || 'Failed to generate preview'
+      const { toast } = await import('sonner')
+      toast.error('Autofill failed', { description: message })
+    } finally {
+      setPreviewLoading(false)
+      setPreviewNodeId(null)
+    }
+  }, [nodes, buildStepFromNode, setNodes])
 
   return (
-    <div className="flex h-screen flex-col bg-background">
-      <div className="flex items-center justify-between border-b border-border bg-card/70 backdrop-blur px-6 py-4">
-        <div className="flex items-center gap-4">
-          <Button variant="ghost" size="icon" onClick={onBack}>
-            <ArrowLeft className="h-4 w-4" />
-          </Button>
-          <div>
-            <Input
-              value={workflowName}
-              onChange={(e) => setWorkflowName(e.target.value)}
-              className="text-xl font-semibold border-0 px-0 focus-visible:ring-0 h-auto bg-transparent"
-            />
-            <Badge variant={workflowStatus === 'active' ? 'default' : 'secondary'} className="mt-1">
-              {workflowStatus === 'active' ? 'Active' : 'Draft'}
-            </Badge>
-          </div>
-        </div>
-        <div className="flex items-center gap-3">
-          <Button variant="outline" onClick={handleTestRun} disabled={testRunning}>{testRunning ? 'Testing…' : 'Test run'}</Button>
-          <Button onClick={handleDeploy} disabled={isDeploying}>
-            {isDeploying ? 'Deploying…' : 'Deploy'}
-          </Button>
-        </div>
+    <div className={canvasStyles.canvasRoot}>
+      {/* Toolbar */}
+      <div className={canvasStyles.toolbar}>
+        <button onClick={() => setScale(s => Math.max(0.1, s - 0.1))} className="p-2 hover:bg-secondary rounded-lg text-muted-foreground hover:text-foreground transition-colors">
+          <Minus className="w-4 h-4" />
+        </button>
+        <span className="text-xs font-mono w-12 text-center text-muted-foreground">{Math.round(scale * 100)}%</span>
+        <button onClick={() => setScale(s => Math.min(3, s + 0.1))} className="p-2 hover:bg-secondary rounded-lg text-muted-foreground hover:text-foreground transition-colors">
+          <Plus className="w-4 h-4" />
+        </button>
+        <div className="w-px h-4 bg-border mx-1" />
+        <button onClick={() => { setScale(1); setOffset({ x: 0, y: 0 }) }} className="p-2 hover:bg-secondary rounded-lg text-muted-foreground hover:text-foreground transition-colors" title="Reset View">
+          <RotateCcw className="w-4 h-4" />
+        </button>
       </div>
 
-      <div className="flex flex-1 overflow-hidden">
-        <div className="flex-1 overflow-y-auto bg-muted/30 py-8">
-          <div className="mx-auto max-w-2xl px-4">
-            {/* Last run summary (once, above steps) */}
-            {lastRun && (
-              <div className="mb-6">
-                <Card className="p-4">
-                  <div className="flex items-center justify-between">
-                    <h3 className="font-semibold">Last Run</h3>
-                    <div className="text-sm text-muted-foreground">
-                      {lastRun.counts.triggers} triggers • {lastRun.counts.schedules} schedules
-                    </div>
-                  </div>
-                  <div className="mt-3 space-y-2">
-                    {lastRun.executions.length === 0 && (
-                      <div className="text-sm text-muted-foreground">No immediate actions executed.</div>
-                    )}
-                    {lastRun.executions.map((ex, i) => (
-                      <div key={i} className="flex items-center gap-2 text-sm">
-                        {ex.status === 'success' && <CheckCircle className="h-4 w-4 text-green-600" />}
-                        {ex.status === 'error' && <AlertCircle className="h-4 w-4 text-destructive" />}
-                        {ex.status === 'skipped' && <MinusCircle className="h-4 w-4 text-muted-foreground" />}
-                        <span className="font-medium">{ex.type}</span>
-                        <span className="text-muted-foreground">• step {ex.stepId}</span>
-                        {ex.status === 'error' && (
-                          <span className="text-destructive">— {ex.error?.message || 'error'}</span>
-                        )}
-                        {ex.status === 'skipped' && <span className="text-muted-foreground">— {ex.error}</span>}
-                      </div>
-                    ))}
-                  </div>
-                </Card>
-              </div>
-            )}
-            {steps.map((step, index) => {
-              const isSelected = selectedStep === step.id
-              const connection = connections.find((c) => c.fromStep === step.id)
-
-              return (
-                <div key={step.id}>
-                  {/* Step Card */}
-                  <Card
-                    className={`relative cursor-pointer transition-all hover:shadow-md ${
-                      isSelected ? "ring-2 ring-primary shadow-lg" : ""
-                    }`}
-                    onClick={() => {
-                      setSelectedStep(step.id)
-                      setSelectedConnection(null)
-                    }}
-                  >
-                    <div className="p-4">
-                      <div className="flex items-start gap-3">
-                        {/* Status Indicator */}
-                        <div className="mt-1">
-                          {step.status === "incomplete" && <AlertCircle className="h-5 w-5 text-yellow-500" />}
-                          {step.status === "error" && <AlertCircle className="h-5 w-5 text-destructive" />}
-                          {step.status === "configured" && <CheckCircle className="h-5 w-5 text-green-600" />}
-                        </div>
-
-                        {/* Service Icon and Info */}
-                        <div className="flex items-center gap-3 flex-1 min-w-0">
-                          <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-card border border-border">
-                            {step.service ? (
-                              getServiceIcon(step.service)
-                            ) : (
-                              <Zap className="h-5 w-5 text-muted-foreground" />
-                            )}
-                          </div>
-                          <div className="flex-1 min-w-0">
-                            <div className="flex items-center gap-2 mb-1">
-                              <span className="text-xs font-medium text-muted-foreground">
-                                {step.type === "trigger" ? "Trigger" : `${index}. Action`}
-                              </span>
-                              {step.service && (
-                                <Badge variant="outline" className="text-xs">
-                                  {getServiceName(step.service)}
-                                </Badge>
-                              )}
-                            </div>
-                            <p className="font-medium text-sm">{step.action}</p>
-                          </div>
-                        </div>
-
-                        {/* Actions Menu */}
-                        <DropdownMenu>
-                          <DropdownMenuTrigger asChild>
-                            <Button variant="ghost" size="icon" className="h-8 w-8">
-                              <MoreVertical className="h-4 w-4" />
-                            </Button>
-                          </DropdownMenuTrigger>
-                          <DropdownMenuContent align="end">
-                            <DropdownMenuItem onClick={() => setSelectedStep(step.id)}>Configure</DropdownMenuItem>
-                            <DropdownMenuItem onClick={() => addStepAt(step.id)}>Insert step below</DropdownMenuItem>
-                            {step.type !== "trigger" && (
-                              <DropdownMenuItem onClick={() => removeStep(step.id)} className="text-destructive">
-                                Delete step
-                              </DropdownMenuItem>
-                            )}
-                          </DropdownMenuContent>
-                        </DropdownMenu>
-                      </div>
-                    </div>
-                  </Card>
-
-                  {/* Connection Line with Add Button */}
-                  {index < steps.length - 1 && (
-                    <div className="relative flex items-center justify-center py-2">
-                      <div className="absolute inset-y-0 left-1/2 w-0.5 bg-border -translate-x-1/2" />
-                      <div className="relative z-10 flex flex-col items-center gap-2">
-                        <Button
-                          variant="outline"
-                          size="icon"
-                          className="h-8 w-8 rounded-full bg-background shadow-sm hover:shadow-md"
-                          onClick={() => addStepAt(step.id)}
-                        >
-                          <Plus className="h-4 w-4" />
-                        </Button>
-                        {connection?.description && (
-                          <Button
-                            variant="ghost"
-                            size="sm"
-                            className="h-auto py-1 px-2 text-xs"
-                            onClick={() => setSelectedConnection(connection.id)}
-                          >
-                            {connection.description}
-                          </Button>
-                        )}
-                      </div>
-                    </div>
-                  )}
-                </div>
-              )
-            })}
-
-            {/* Add Step at End */}
-            <div className="relative flex items-center justify-center py-4">
-              <div className="absolute inset-y-0 left-1/2 w-0.5 bg-border -translate-x-1/2" />
-              <Button
-                variant="outline"
-                size="icon"
-                className="relative z-10 h-8 w-8 rounded-full bg-background shadow-sm hover:shadow-md"
-                onClick={() => addStepAt(steps[steps.length - 1]?.id || null)}
-              >
-                <Plus className="h-4 w-4" />
-              </Button>
-            </div>
-          </div>
-
-        
-        </div>
-
-        {(selectedStepData || selectedConnectionData) && (
-          <div className="w-96 border-l border-border bg-card overflow-y-auto">
-            <div className="p-6 space-y-6">
-              {selectedStepData && (
-                <>
-                  <div className="flex items-center justify-between">
-                    <div>
-                      <h3 className="text-lg font-semibold">
-                        {selectedStepData.type === "trigger" ? "Trigger" : "Action"}
-                      </h3>
-                      <p className="text-sm text-muted-foreground">
-                        {selectedStepData.type === "trigger" ? "Setup" : "Configure"}
-                      </p>
-                    </div>
-                    {selectedStepData.type !== "trigger" && (
-                      <Button variant="ghost" size="icon" onClick={() => removeStep(selectedStepData.id)}>
-                        <Trash2 className="h-4 w-4" />
-                      </Button>
-                    )}
-                  </div>
-
-                  <div className="space-y-4">
-                    <div className="space-y-2">
-                      <Label>Service</Label>
-                      {/* Button group replacing the Select */}
-                      <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
-                        {[
-                          { value: "webhook", label: "HTTP Webhook" },
-                          { value: "email", label: "Email Service" },
-                          { value: "database", label: "Database" },
-                          { value: "messaging", label: "Messaging Service" },
-                          { value: "payment", label: "Payment Service" },
-                          { value: "document", label: "Document Service" },
-                          { value: "notification", label: "Notification" },
-                          { value: "scheduler", label: "Scheduler" },
-                          { value: "api", label: "API Service" },
-                        ].map((opt) => (
-                          <Button
-                            key={opt.value}
-                            variant={selectedStepData.service === opt.value ? "default" : "outline"}
-                            size="sm"
-                            className="justify-start"
-                            onClick={() =>
-                              updateStep(selectedStepData.id, {
-                                service: opt.value,
-                                action: defaultActionForService[opt.value] || "",
-                                status: opt.value ? "configured" : "incomplete",
-                              })
-                            }
-                          >
-                            <span className="truncate">{opt.label}</span>
-                          </Button>
-                        ))}
-                      </div>
-                    </div>
-
-                    {selectedStepData.service && (
-                      <div className="space-y-2">
-                        <Label>Event</Label>
-                        {/* Button group replacing the Select */}
-                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                          {actionsForService(selectedStepData.service).map((act) => (
-                            <Button
-                              key={act}
-                              variant={selectedStepData.action === act ? "default" : "outline"}
-                              size="sm"
-                              className="justify-start"
-                              onClick={() => updateStep(selectedStepData.id, { action: act })}
-                            >
-                              {act}
-                            </Button>
-                          ))}
-                        </div>
-                      </div>
-                    )}
-
-                    {selectedStepData.service && selectedStepData.action && (
-                      <div className="space-y-2">
-                        <Label>Configuration</Label>
-                        <div className="rounded-lg border border-border bg-muted/50 p-4 space-y-3">
-                          {/* Scheduler specific config */}
-                          {(selectedStepData.service === 'scheduler' && selectedStepData.action === 'Schedule Task') ? (
-                            <>
-                              <div className="space-y-2">
-                                <Label className="text-xs">Calendar</Label>
-                                <Input
-                                  placeholder="Calendar ID (e.g., primary)"
-                                  className="h-8 text-sm"
-                                  value={(selectedStepData.config?.calendarId as string) || ''}
-                                  onChange={(e) => {
-                                    const cfg: any = { ...(selectedStepData.config || {}), calendarId: e.target.value }
-                                    updateStep(selectedStepData.id, { config: cfg })
-                                  }}
-                                />
-                              </div>
-                              <div className="space-y-2">
-                                <Label className="text-xs">Description</Label>
-                                <Textarea
-                                  placeholder="What is this scheduled task?"
-                                  className="min-h-[60px] text-sm"
-                                  value={(selectedStepData.config?.description as string) || ''}
-                                  onChange={(e) => {
-                                    const cfg: any = { ...(selectedStepData.config || {}), description: e.target.value }
-                                    updateStep(selectedStepData.id, { config: cfg })
-                                  }}
-                                />
-                              </div>
-                              {/* Date & Time pickers */}
-                              <div className="grid grid-cols-1 gap-3">
-                                <div className="space-y-2">
-                                  <Label className="text-xs">Date</Label>
-                                  <Input
-                                    type="date"
-                                    className={cn("h-8 text-sm", (testErrors.find(e => e.stepId === selectedStepData.id && e.field === 'calendarDate' && e.level === 'error')) && "border-red-500 focus-visible:ring-red-500")}
-                                    value={(selectedStepData.config?.calendarDate as string) || ''}
-                                    onChange={(e) => {
-                                        const cfg: any = { ...(selectedStepData.config || {}), calendarDate: e.target.value }
-                                      // derive ISO previews if times exist
-                                      const startTime = cfg.startTime as string | undefined
-                                      const endTime = cfg.endTime as string | undefined
-                                      if (e.target.value && (startTime || endTime)) {
-                                        if (startTime) cfg.start = `${e.target.value}T${startTime}:00`
-                                        if (endTime) cfg.end = `${e.target.value}T${endTime}:00`
-                                      }
-                                      updateStep(selectedStepData.id, { config: cfg })
-                                    }}
-                                  />
-                                  {testErrors.find(e => e.stepId === selectedStepData.id && e.field === 'calendarDate' && e.level === 'error') && (
-                                    <p className="text-[11px] text-red-600">{testErrors.find(e => e.stepId === selectedStepData.id && e.field === 'calendarDate' && e.level === 'error')?.message}</p>
-                                  )}
-                                </div>
-                                <div className="grid grid-cols-2 gap-3">
-                                  <div className="space-y-2">
-                                    <Label className="text-xs">Start Time</Label>
-                                    <Input
-                                      type="time"
-                                      className={cn("h-8 text-sm", (testErrors.find(e => e.stepId === selectedStepData.id && e.field === 'startTime' && e.level === 'error')) && "border-red-500 focus-visible:ring-red-500")}
-                                      value={(selectedStepData.config?.startTime as string) || ''}
-                                      onChange={(e) => {
-                                        const cfg: any = { ...(selectedStepData.config || {}), startTime: e.target.value }
-                                        const date = cfg.calendarDate as string | undefined
-                                        if (date && e.target.value) cfg.start = `${date}T${e.target.value}:00`
-                                        updateStep(selectedStepData.id, { config: cfg })
-                                      }}
-                                    />
-                                    {testErrors.find(e => e.stepId === selectedStepData.id && e.field === 'startTime' && e.level === 'error') && (
-                                      <p className="text-[11px] text-red-600">{testErrors.find(e => e.stepId === selectedStepData.id && e.field === 'startTime' && e.level === 'error')?.message}</p>
-                                    )}
-                                  </div>
-                                  <div className="space-y-2">
-                                    <Label className="text-xs">End Time</Label>
-                                    <Input
-                                      type="time"
-                                      className={cn("h-8 text-sm", (testErrors.find(e => e.stepId === selectedStepData.id && e.field === 'endTime' && e.level === 'error')) && "border-red-500 focus-visible:ring-red-500")}
-                                      value={(selectedStepData.config?.endTime as string) || ''}
-                                      onChange={(e) => {
-                                        const cfg: any = { ...(selectedStepData.config || {}), endTime: e.target.value }
-                                        const date = cfg.calendarDate as string | undefined
-                                        if (date && e.target.value) cfg.end = `${date}T${e.target.value}:00`
-                                        updateStep(selectedStepData.id, { config: cfg })
-                                      }}
-                                    />
-                                    {testErrors.find(e => e.stepId === selectedStepData.id && e.field === 'endTime' && e.level === 'error') && (
-                                      <p className="text-[11px] text-red-600">{testErrors.find(e => e.stepId === selectedStepData.id && e.field === 'endTime' && e.level === 'error')?.message}</p>
-                                    )}
-                                  </div>
-                                </div>
-                                <div className="grid grid-cols-2 gap-3">
-                                  <div className="space-y-2">
-                                    <Label className="text-xs">Timezone</Label>
-                                    <Input
-                                      placeholder="UTC"
-                                      className="h-8 text-sm"
-                                      value={(selectedStepData.config?.timezone as string) || ''}
-                                      onChange={(e) => {
-                                        const cfg: any = { ...(selectedStepData.config || {}), timezone: e.target.value }
-                                        updateStep(selectedStepData.id, { config: cfg })
-                                      }}
-                                    />
-                                  </div>
-                                  <div className="space-y-2">
-                                    <Label className="text-xs">Preview</Label>
-                                    <div className="text-[11px] text-muted-foreground border rounded px-2 py-1 h-8 flex items-center">
-                                      {(selectedStepData.config?.start as string) || 'start not set'} → {(selectedStepData.config?.end as string) || 'end not set'}
-                                    </div>
-                                  </div>
-                                </div>
-                              </div>
-                              <p className="text-[11px] text-muted-foreground">Pick date and start/end times. We’ll store ISO-like local times and optional timezone.</p>
-                            </>
-                          ) : null}
-
-                          {/* Messaging/Email specific config */}
-                          {((selectedStepData.service === 'messaging' && selectedStepData.action === 'Send Message')
-                            || (selectedStepData.service === 'notification' && selectedStepData.action === 'Send SMS')
-                            || (selectedStepData.service === 'email' && (selectedStepData.action === 'Send Email' || selectedStepData.action === 'Send Template Email')))
-                            ? (
-                              <>
-                                <div className="space-y-2">
-                                  <Label className="text-xs">Sender</Label>
-                                  <Input
-                                    placeholder={selectedStepData.service === 'email' ? 'from@example.com' : '+1... or phoneNumberId'}
-                                    className="h-8 text-sm"
-                                    value={(selectedStepData.config?.sender as string) || ''}
-                                    disabled={!Boolean(selectedStepData.config?.overrideSender)}
-                                    onChange={(e) => {
-                                      const cfg: any = { ...(selectedStepData.config || {}), sender: e.target.value }
-                                      updateStep(selectedStepData.id, { config: cfg })
-                                    }}
-                                  />
-                                  <div className="flex items-center gap-2">
-                                    <input
-                                      id={`override-${selectedStepData.id}`}
-                                      type="checkbox"
-                                      className="h-3 w-3"
-                                      checked={Boolean(selectedStepData.config?.overrideSender)}
-                                      onChange={(e) => {
-                                        const cfg: any = { ...(selectedStepData.config || {}), overrideSender: e.target.checked }
-                                        // If enabling override and sender is empty, seed with current default to make it editable
-                                        if (e.target.checked && !cfg.sender) {
-                                          cfg.sender = selectedStepData.service === 'email'
-                                            ? (defaultSenders?.emailSender || '')
-                                            : (selectedStepData.service === 'notification'
-                                              ? (defaultSenders?.smsSender || '')
-                                              : (defaultSenders?.messagingSender || ''))
-                                        }
-                                        updateStep(selectedStepData.id, { config: cfg })
-                                      }}
-                                    />
-                                    <label htmlFor={`override-${selectedStepData.id}`} className="text-[11px]">Override sender for this step</label>
-                                  </div>
-                                  <p className="text-[10px] text-muted-foreground">Use a verified SendGrid sender email for email steps, and a purchased/verified Twilio number for SMS.</p>
-                                </div>
-                                <div className="space-y-2">
-                                  <Label className="text-xs">Receiver</Label>
-                                  <Input
-                                    placeholder={selectedStepData.service === 'email' ? 'to@example.com' : '+1...'}
-                                    className={cn("h-8 text-sm", (testErrors.find(e => e.stepId === selectedStepData.id && e.field === 'receiver' && e.level === 'error')) && "border-red-500 focus-visible:ring-red-500")}
-                                    value={(selectedStepData.config?.receiver as string) || ''}
-                                    onChange={(e) => {
-                                      const cfg = { ...(selectedStepData.config || {}), receiver: e.target.value }
-                                      updateStep(selectedStepData.id, { config: cfg })
-                                    }}
-                                  />
-                                  {testErrors.find(e => e.stepId === selectedStepData.id && e.field === 'receiver' && e.level === 'error') && (
-                                    <p className="text-[11px] text-red-600">{testErrors.find(e => e.stepId === selectedStepData.id && e.field === 'receiver' && e.level === 'error')?.message}</p>
-                                  )}
-                                </div>
-                                <div className="space-y-2">
-                                  <Label className="text-xs">Message Body</Label>
-                                  <Textarea
-                                    placeholder={selectedStepData.service === 'email' ? 'Email body...' : 'Message text...'}
-                                    className={cn("min-h-[80px] text-sm", (testErrors.find(e => e.stepId === selectedStepData.id && e.field === 'body' && e.level === 'error')) && "border-red-500 focus-visible:ring-red-500")}
-                                    value={(selectedStepData.config?.body as string) || ''}
-                                    onChange={(e) => {
-                                      const cfg = { ...(selectedStepData.config || {}), body: e.target.value }
-                                      updateStep(selectedStepData.id, { config: cfg })
-                                    }}
-                                  />
-                                  {testErrors.find(e => e.stepId === selectedStepData.id && e.field === 'body' && e.level === 'error') && (
-                                    <p className="text-[11px] text-red-600">{testErrors.find(e => e.stepId === selectedStepData.id && e.field === 'body' && e.level === 'error')?.message}</p>
-                                  )}
-                                  <p className="text-[11px] text-muted-foreground">Provide sender, receiver, and message body.</p>
-                                </div>
-                                {/* Advanced provider overrides */}
-                                <div className="mt-3 rounded-md border border-dashed p-3">
-                                  <p className="text-[11px] font-medium mb-2">Advanced</p>
-                                  <div className="grid grid-cols-2 gap-3">
-                                    <div className="space-y-1">
-                                      <Label className="text-[11px]">providerConfigKey</Label>
-                                      <Input
-                                        placeholder={selectedStepData.service === 'notification' ? 'twilio' : (selectedStepData.service === 'messaging' ? 'whatsapp' : 'sendgrid')}
-                                        className="h-8 text-sm"
-                                        value={((selectedStepData.config as any)?.providerConfigKey as string) || ''}
-                                        onChange={(e) => {
-                                          const cfg = { ...(selectedStepData.config || {}), providerConfigKey: e.target.value }
-                                          updateStep(selectedStepData.id, { config: cfg })
-                                        }}
-                                      />
-                                    </div>
-                                    <div className="space-y-1">
-                                      <Label className="text-[11px]">connectionId</Label>
-                                      <Input
-                                        placeholder={selectedStepData.service === 'notification' ? 'twilio_main' : (selectedStepData.service === 'messaging' ? 'whatsapp_main' : 'sendgrid_main')}
-                                        className="h-8 text-sm"
-                                        value={((selectedStepData.config as any)?.connectionId as string) || ''}
-                                        onChange={(e) => {
-                                          const cfg = { ...(selectedStepData.config || {}), connectionId: e.target.value }
-                                          updateStep(selectedStepData.id, { config: cfg })
-                                        }}
-                                      />
-                                    </div>
-                                  </div>
-                                  <p className="text-[10px] text-muted-foreground mt-2">Optional. Overrides project defaults for this step only. Leave empty to use environment configuration.</p>
-                                </div>
-                              </>
-                            ) : (! (selectedStepData.service === 'scheduler' && selectedStepData.action === 'Schedule Task') ? (
-                              <>
-                                <div className="space-y-2">
-                                  <Label className="text-xs">Parameter 1</Label>
-                                  <Input placeholder="Enter value..." className="h-8 text-sm" />
-                                </div>
-                                <div className="space-y-2">
-                                  <Label className="text-xs">Parameter 2</Label>
-                                  <Input placeholder="Enter value..." className="h-8 text-sm" />
-                                </div>
-                                <p className="text-xs text-muted-foreground">
-                                  Configure {selectedStepData.action} parameters
-                                </p>
-                              </>
-                            ) : null)}
-                        </div>
-                      </div>
-                    )}
-                  </div>
-                </>
-              )}
-
-              {selectedConnectionData && (
-                <>
-                  <div className="flex items-center justify-between">
-                    <h3 className="text-lg font-semibold">Connection Note</h3>
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      onClick={() => {
-                        updateConnection(selectedConnectionData.id, "")
-                        setSelectedConnection(null)
-                      }}
-                    >
-                      Clear
-                    </Button>
-                  </div>
-
-                  <div className="space-y-4">
-                    <div className="space-y-2">
-                      <Label htmlFor="connection-description">Description</Label>
-                      <Textarea
-                        id="connection-description"
-                        placeholder="Add a note about this connection..."
-                        value={selectedConnectionData.description || ""}
-                        onChange={(e: React.ChangeEvent<HTMLTextAreaElement>) => updateConnection(selectedConnectionData.id, e.target.value)}
-                        className="min-h-[100px] resize-none"
-                      />
-                      <p className="text-xs text-muted-foreground">Document what data flows between these steps</p>
-                    </div>
-                  </div>
-                </>
-              )}
-            </div>
-          </div>
+      {/* Run Workflow Button */}
+      <div className={canvasStyles.runArea}>
+        <button onClick={handleValidate} className="px-3 py-1.5 text-xs font-semibold border border-border rounded-lg bg-background hover:bg-secondary transition-colors">Validate</button>
+        <button onClick={handleRunWorkflow} className={canvasStyles.runButton}>Run Workflow</button>
+        {runStatus && (
+          <span className="text-xs text-muted-foreground bg-card px-2 py-1 rounded border border-border">{runStatus}</span>
         )}
+        {validationSummary && (
+          <span className="text-xs text-muted-foreground">
+            {validationSummary.errors > 0 ? `${validationSummary.errors} error${validationSummary.errors === 1 ? '' : 's'}` : '0 errors'}, {validationSummary.warnings} warning{validationSummary.warnings === 1 ? '' : 's'}
+          </span>
+        )}
+      </div>
+      {/* Canvas Area */}
+      <div
+        ref={canvasRef}
+        className={canvasStyles.canvasArea}
+        onWheel={handleWheel}
+        onMouseDown={handleMouseDown}
+        onMouseMove={handleMouseMove}
+        onMouseUp={handleMouseUp}
+        onDragOver={handleDragOver}
+        onDrop={handleDrop}
+        style={{
+          backgroundImage: "radial-gradient(#e5e7eb 1px, transparent 1px)",
+          backgroundSize: `${20 * scale}px ${20 * scale}px`,
+          backgroundPosition: `${offset.x}px ${offset.y}px`,
+        }}
+      >
+        <div
+          style={{
+            transform: `translate(${offset.x}px, ${offset.y}px) scale(${scale})`,
+            transformOrigin: "0 0",
+            width: "100%",
+            height: "100%",
+            position: "absolute",
+            top: 0,
+            left: 0,
+          }}
+        >
+          {/* Connections Layer */}
+          <svg className={canvasStyles.svgLayer}>
+            {connections.map(conn => {
+              // Use sortedNodes for source/target lookup to ensure correct node references
+              const sourceNode = sortedNodes.find(n => n.id === conn.source)
+              const targetNode = sortedNodes.find(n => n.id === conn.target)
+              if (!sourceNode || !targetNode) return null
+
+              const isHighlighted = highlightedNodes.has(conn.source) && highlightedNodes.has(conn.target)
+
+                    // Compute anchor points using measured sizes when available
+                    const srcSize = nodeSizes[sourceNode.id] || { width: 256, height: 80 }
+                    const tgtSize = nodeSizes[targetNode.id] || { width: 256, height: 80 }
+                    const startPoint = getOutputAnchor(sourceNode, srcSize, conn.sourceHandle)
+                    const endPoint = getInputAnchor(targetNode, tgtSize)
+
+                    return (
+                      <ConnectionComponent
+                        key={conn.id}
+                        connection={conn}
+                        sourcePoint={startPoint}
+                        targetPoint={endPoint}
+                        isHighlight={isHighlighted}
+                      />
+                    )
+            })}
+            
+            {/* Active Connection Line (while dragging) */}
+            {connectingNodeId && (() => {
+              const node = nodes.find(n => n.id === connectingNodeId)
+              if (!node) return null
+              const size = nodeSizes[node.id] || { width: 256, height: 80 }
+              const start = getOutputAnchor(node, size, connectingHandleId || undefined)
+              return (
+                <path
+                  d={getBezierPath(start, mousePos)}
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth={2}
+                  strokeDasharray="5,5"
+                  className="text-primary/50"
+                />
+              )
+            })()}
+          </svg>
+
+          {/* Nodes Layer */}
+          {sortedNodes.map(node => (
+            // console.log("Rendering node:", node),
+            <div 
+              key={node.id} 
+              onMouseEnter={() => setHoveredNodeId(node.id)}
+              onMouseLeave={() => setHoveredNodeId(null)}
+              onMouseUp={(e) => {
+                // Handle dropping a connection on a node input
+                if (connectingNodeId && connectingNodeId !== node.id) {
+                  handlePortMouseUp(e, node.id, "input")
+                }
+              }}
+              className={selectedNodes.has(node.id) ? "z-50 relative" : "z-10 relative"}
+            >
+              <NodeComponent
+                node={node}
+                  
+                isSelected={selectedNodes.has(node.id)}
+                isHighlight={highlightedNodes.has(node.id)}
+                scale={scale}
+                validationIssues={validationIssuesByNode[node.id]}
+                onFillAgent={handleFillAgentContent}
+                previewLoading={previewLoading && previewNodeId === node.id}
+                onNodeClick={(id, shift) => {
+                  if (shift) {
+                    const newSelected = new Set(selectedNodes)
+                    if (newSelected.has(id)) newSelected.delete(id)
+                    else newSelected.add(id)
+                    setSelectedNodes(newSelected)
+                  } else {
+                    setSelectedNodes(new Set([id]))
+                  }
+                }}
+                onNodeDragStart={handleNodeDragStart}
+                onPortMouseDown={handlePortMouseDown}
+                onNodeDataChange={handleNodeDataChange}
+                onMeasure={handleMeasure}
+              />
+            </div>
+          ))}
+        </div>
+      </div>
+      
+      {/* Hint / Status */}
+      <div className={canvasStyles.hint}>
+        {connectingNodeId ? "Release on another node to connect" : "Drag nodes from sidebar • Shift+Click to multi-select • Backspace to delete"}
       </div>
     </div>
   )

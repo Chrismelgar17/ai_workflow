@@ -6,6 +6,13 @@ import { v4 as uuid } from 'uuid'
 import swaggerUi from 'swagger-ui-express'
 import { getSupabase, USE_SUPABASE } from './db/supabase.js'
 import { requireAuth } from './middleware/auth.js'
+import { unifiedAction } from './integrations/unified.js'
+import { NangoClient, composeProviderCatalog, DEFAULT_PROVIDER_CATALOG } from './integrations/nangoClient.js'
+import type { ConnectSessionEndUser, ConnectSessionIntegrationDefaults, CreateConnectSessionPayload } from './integrations/nangoClient.js'
+import { runCompletion, streamCompletion } from './integrations/llm.js'
+import { RetellService } from './integrations/retell.js'
+import fs from 'fs'
+import path from 'path'
 
 const app = express()
 const PORT = process.env.PORT || 5000
@@ -72,6 +79,16 @@ const openapi: any = {
   ,'/api/integrations/whatsapp/ensure-nango-connection': { post: { summary: 'Ensure WhatsApp Cloud connection in Nango from env', responses: { '200': { description: 'ok' } } } }
   ,'/api/llm/complete': { post: { summary: 'LLM text completion', responses: { '200': { description: 'ok' } } } }
   ,'/api/llm/stream': { get: { summary: 'LLM streaming completion (SSE)', responses: { '200': { description: 'ok' } } } }
+  ,'/api/agents': {
+      get: { summary: 'List agents', responses: { '200': { description: 'ok' } } },
+      post: { summary: 'Create agent', responses: { '201': { description: 'created' } } }
+    }
+  ,'/api/agents/{id}': {
+      get: { summary: 'Get agent', parameters: [{ name: 'id', in: 'path' }], responses: { '200': { description: 'ok' } } },
+      put: { summary: 'Update agent', parameters: [{ name: 'id', in: 'path' }], responses: { '200': { description: 'ok' } } },
+      delete: { summary: 'Delete agent', parameters: [{ name: 'id', in: 'path' }], responses: { '200': { description: 'ok' } } }
+    }
+  ,'/api/agents/preview': { post: { summary: 'Preview agent output', responses: { '200': { description: 'ok' } } } }
   }
 }
 
@@ -100,6 +117,12 @@ function llmRateLimit(req: any, res: any, next: any) {
     return res.status(429).json({ error: 'rate_limited', retry_after_seconds: retryAfter })
   }
   next()
+}
+
+function getRetellService() {
+  const apiKey = process.env.RETELL_API_KEY
+  if (!apiKey) throw new Error('RETELL_API_KEY is not configured')
+  return new RetellService({ apiKey, baseUrl: process.env.RETELL_BASE_URL })
 }
 
 app.get('/api/openapi.json', (_req, res) => res.json(openapi))
@@ -131,6 +154,508 @@ const db = {
 // Health
 app.get('/api/health', (_req, res) => {
   res.json({ status: 'ok', service: 'workflow-backend', time: new Date().toISOString() })
+})
+
+type Agent = {
+  id: string
+  name: string
+  provider: string
+  model: string
+  language?: string
+  voice?: string
+  prompt?: string
+  config?: Record<string, any>
+  created_at?: string
+}
+
+const agentStore: Record<string, Agent> = {}
+
+async function findAgentById(id: string): Promise<Agent | null> {
+  if (!id) return null
+  if (USE_SUPABASE) {
+    try {
+      const supabase = getSupabase()
+      if (!supabase) return null
+      const { data, error } = await supabase.from('agents').select('*').eq('id', id).maybeSingle()
+      if (error) return null
+      return data ? normalizeAgent(data) : null
+    } catch {
+      return null
+    }
+  }
+  return agentStore[id] ?? null
+}
+
+function normalizeAgent(row: any): Agent {
+  const config = row.config ?? {}
+  const voice = row.voice ?? config?.voice
+  return {
+    id: row.id,
+    name: row.name,
+    provider: row.provider,
+    model: row.model,
+    language: row.language,
+    voice,
+    prompt: row.prompt,
+    config: config,
+    created_at: row.created_at,
+  }
+}
+
+class RetellCallError extends Error {
+  code: string
+  status: number
+
+  constructor(code: string, message: string, status = 400) {
+    super(message)
+    this.code = code
+    this.status = status
+  }
+}
+
+function pickFirstString(...values: Array<unknown>): string | undefined {
+  for (const value of values) {
+    if (typeof value === 'string') {
+      const trimmed = value.trim()
+      if (trimmed.length > 0) return trimmed
+    }
+  }
+  return undefined
+}
+
+function parseMetadataInput(value: unknown): Record<string, any> | null {
+  if (value === undefined || value === null) return null
+  if (typeof value === 'string') {
+    const trimmed = value.trim()
+    if (!trimmed) return null
+    try {
+      const parsed = JSON.parse(trimmed)
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        return { ...parsed }
+      }
+      return { raw: trimmed }
+    } catch {
+      return { raw: trimmed }
+    }
+  }
+  if (typeof value === 'object') {
+    if (Array.isArray(value)) {
+      return { items: [...value] }
+    }
+    return { ...(value as Record<string, any>) }
+  }
+  return null
+}
+
+function mergeMetadata(...sources: Array<unknown>): Record<string, any> {
+  const merged: Record<string, any> = {}
+  for (const source of sources) {
+    const parsed = parseMetadataInput(source)
+    if (parsed) Object.assign(merged, parsed)
+  }
+  return merged
+}
+
+type StartRetellVoiceCallOptions = {
+  channel?: string
+  toPhoneNumber?: string
+  fromPhoneNumber?: string
+  metadata?: Record<string, any>
+  overrides?: Record<string, any>
+}
+
+async function startRetellVoiceCall(agent: Agent, options: StartRetellVoiceCallOptions = {}) {
+  if (!agent) {
+    throw new RetellCallError('agent_not_found', 'Agent not found.', 404)
+  }
+
+  const provider = (agent.provider || '').toLowerCase()
+  if (provider !== 'retell') {
+    throw new RetellCallError('retell_agent_required', 'Voice calls require an agent with provider retell.', 400)
+  }
+
+  const config = agent.config || {}
+  const overrides = options.overrides || {}
+  const retellAgentId = pickFirstString(
+    config.retellAgentId,
+    config.agentId,
+    config.retell_id,
+    config?.retell?.agentId
+  )
+
+  if (!retellAgentId) {
+    throw new RetellCallError('retell_agent_id_missing', 'Store the Retell agent ID under config.retellAgentId.', 400)
+  }
+
+  const channelRaw = options.channel ?? overrides.channel ?? config.retellChannel ?? 'phone'
+  const channel = String(channelRaw || 'phone').toLowerCase() === 'web' ? 'web' : 'phone'
+
+  const metadata = mergeMetadata(config.retellMetadata, overrides.metadata, options.metadata)
+  metadata.workflow_agent_id = agent.id
+  metadata.workflow_agent_name = agent.name
+  metadata.workflow_agent_provider = agent.provider
+  metadata.workflow_channel = channel
+  if (!metadata.workflow_triggered_at) {
+    metadata.workflow_triggered_at = new Date().toISOString()
+  }
+
+  const service = getRetellService()
+
+  if (channel === 'web') {
+    const response = await service.createWebCall({ agentId: retellAgentId, metadata })
+    return { channel: 'web' as const, result: response, metadata }
+  }
+
+  const toPhoneNumber = pickFirstString(
+    options.toPhoneNumber,
+    overrides.toPhoneNumber,
+    overrides.to,
+    config.retellDefaultToNumber,
+    config.defaultToNumber
+  )
+
+  if (!toPhoneNumber) {
+    throw new RetellCallError('toPhoneNumber_required', 'Provide toPhoneNumber in the call options or set config.retellDefaultToNumber.', 400)
+  }
+
+  const fromPhoneNumber = pickFirstString(
+    options.fromPhoneNumber,
+    overrides.fromPhoneNumber,
+    overrides.from,
+    config.retellCallerId,
+    config.callerId
+  )
+
+  const response = await service.createPhoneCall({
+    agentId: retellAgentId,
+    toPhoneNumber,
+    fromPhoneNumber,
+    metadata,
+  })
+
+  return { channel: 'phone' as const, result: response, toPhoneNumber, fromPhoneNumber, metadata }
+}
+
+type AgentPreviewChannel = 'sms' | 'whatsapp' | 'email'
+
+async function ensureAgentGeneratedContent(options: {
+  flowId: string
+  step: any
+  channel: AgentPreviewChannel
+  config: Record<string, any>
+}): Promise<Record<string, any>> {
+  const { flowId, step, channel } = options
+  const cfg = { ...(options.config || {}) }
+  const agentId = cfg.agentId
+  const hasBody = Boolean(cfg.body && String(cfg.body).trim())
+  const hasSubject = Boolean(cfg.subject && String(cfg.subject).trim())
+  const needsBody = !hasBody
+  const needsSubject = channel === 'email' && !hasSubject
+
+  if (!agentId || (!needsBody && !needsSubject)) {
+    return {
+      ...cfg,
+      agentId,
+      agentModel: cfg.agentModel,
+      agentLanguage: cfg.agentLanguage || cfg.language,
+      agentProvider: cfg.agentProvider,
+      body: cfg.body,
+      subject: cfg.subject,
+    }
+  }
+
+  let rolePrompt = (cfg.agentPrompt || '').trim()
+  let model = (cfg.agentModel || '').trim()
+  let provider = (cfg.agentProvider || '').trim()
+  let language = (cfg.agentLanguage || cfg.language || '').trim()
+  let storedAgent: Agent | null = null
+
+  if (!rolePrompt || !model || !provider || !language) {
+    storedAgent = await findAgentById(agentId)
+  }
+  if (!rolePrompt && storedAgent?.prompt) {
+    rolePrompt = storedAgent.prompt.trim()
+  }
+  if (!model && storedAgent?.model) {
+    model = storedAgent.model
+  }
+  if (!provider && storedAgent?.provider) {
+    provider = storedAgent.provider
+  }
+  if (!language && storedAgent?.language) {
+    language = storedAgent.language.trim()
+  }
+
+  if (!rolePrompt) {
+    rolePrompt = `You are an AI agent that drafts ${channel === 'email' ? 'emails' : 'messages'} for workflow automations.`
+  }
+  if (!model) {
+    model = process.env.OPENAI_DEFAULT_MODEL || 'gpt-4o-mini'
+  }
+  if (!language) {
+    language = 'en-US'
+  }
+
+  const temperature = typeof cfg.agentTemperature === 'number' ? cfg.agentTemperature : 0.7
+  const maxTokens = typeof cfg.agentMaxTokens === 'number'
+    ? cfg.agentMaxTokens
+    : channel === 'email' ? 600 : 240
+  const receiver = cfg.receiver || cfg.recipient || 'the recipient'
+  const nodeLabel = cfg.nodeLabel || step?.name || step?.label || step?.action || 'Workflow step'
+  const nodeDescription = cfg.nodeDescription || ''
+  const events = Array.isArray(cfg.autoEvents) && cfg.autoEvents.length > 0
+    ? `Emphasize these events or outcomes: ${cfg.autoEvents.join(', ')}.`
+    : ''
+
+  const channelInstructions = channel === 'email'
+    ? 'Compose a professional email with a clear subject line and detailed body. Opt for actionable, friendly language.'
+    : channel === 'whatsapp'
+      ? 'Write a conversational WhatsApp-style message. Keep it friendly, clear, and under 600 characters.'
+      : 'Write an SMS text message that is concise (<= 320 characters), direct, and actionable.'
+
+  const promptParts: string[] = [
+    rolePrompt,
+    '',
+    'Workflow Context:',
+    `- Workflow ID: ${flowId}`,
+    `- Step ID: ${step?.id || 'unknown-step'}`,
+    `- Step Label: ${nodeLabel}`,
+  ]
+
+  if (nodeDescription) promptParts.push(`- Step Description: ${nodeDescription}`)
+  if (cfg.contextSummary) promptParts.push(`- Additional Context: ${cfg.contextSummary}`)
+  promptParts.push(`- Channel: ${channel}`)
+  promptParts.push(`- Recipient: ${receiver}`)
+  if (events) promptParts.push(events)
+  if (language) promptParts.push(`- Preferred Language: ${language}`)
+
+  promptParts.push('', channelInstructions)
+  if (channel === 'email') {
+    promptParts.push('Return the email in the following format:\nSubject: <short subject line>\n\nBody:\n<email body>')
+  } else {
+    promptParts.push('Return only the final message text ready to send without backticks or explanations.')
+  }
+  if (language) {
+    promptParts.push(`Ensure the response is written in ${language}.`)
+  }
+
+  const finalPrompt = promptParts.join('\n')
+
+  const completion = await runCompletion({
+    prompt: finalPrompt,
+    model,
+    temperature,
+    maxTokens,
+    provider: provider || undefined,
+    useCache: true,
+  })
+
+  let content = completion?.content?.trim() || ''
+  if (!content) throw new Error('Agent returned empty content')
+
+  const nextConfig = {
+    ...cfg,
+    agentId,
+    agentModel: model,
+    agentProvider: provider || cfg.agentProvider,
+    agentLanguage: language,
+    body: cfg.body,
+    subject: cfg.subject,
+  }
+
+  if (channel === 'email') {
+    let subject = nextConfig.subject || ''
+    let body = nextConfig.body || ''
+    const subjectMatch = content.match(/subject\s*:\s*(.+)/i)
+    if (subjectMatch) {
+      subject = subject || subjectMatch[1].trim()
+      content = content.replace(subjectMatch[0], '').trim()
+    }
+    const bodyIndex = content.toLowerCase().indexOf('body:')
+    if (bodyIndex >= 0) {
+      body = content.slice(bodyIndex + 5).trim()
+    } else {
+      body = content.trim()
+    }
+    return { ...nextConfig, body, subject }
+  }
+
+  return { ...nextConfig, body: content, subject: nextConfig.subject }
+}
+
+// Agents
+app.get('/api/agents', async (_req, res) => {
+  if (USE_SUPABASE) {
+    const supabase = getSupabase()!
+    const { data, error } = await supabase.from('agents').select('*').order('created_at', { ascending: false })
+    if (error) return res.status(500).json({ error: error.message })
+    return res.json(data?.map(normalizeAgent) ?? [])
+  }
+  res.json(Object.values(agentStore))
+})
+
+app.get('/api/agents/:id', async (req, res) => {
+  const id = req.params.id
+  if (USE_SUPABASE) {
+    const supabase = getSupabase()!
+    const { data, error } = await supabase.from('agents').select('*').eq('id', id).maybeSingle()
+    if (error) return res.status(500).json({ error: error.message })
+    if (!data) return res.status(404).json({ error: 'not found' })
+    return res.json(normalizeAgent(data))
+  }
+  const agent = agentStore[id]
+  if (!agent) return res.status(404).json({ error: 'not found' })
+  res.json(agent)
+})
+
+app.post('/api/agents', async (req, res) => {
+  const body = req.body || {}
+  const id = body.id || uuid()
+  const voice = typeof body.voice === 'string' ? body.voice.trim() : undefined
+  const baseConfig = { ...(body.config || {}) }
+  if ('voice' in baseConfig) delete baseConfig.voice
+  const payload: Agent = {
+    id,
+    name: body.name || `Agent ${id.slice(0, 4)}`,
+    model: body.model || 'gpt-4o-mini',
+    provider: body.provider || 'openai',
+    language: body.language || 'en-US',
+    voice,
+    prompt: body.prompt || '',
+    config: baseConfig,
+  }
+  if (USE_SUPABASE) {
+    const supabase = getSupabase()!
+    const { data, error } = await supabase.from('agents').insert(payload).select().maybeSingle()
+    if (error) return res.status(500).json({ error: error.message })
+    return res.status(201).json(normalizeAgent(data))
+  }
+  agentStore[id] = payload
+  res.status(201).json(payload)
+})
+
+app.put('/api/agents/:id', async (req, res) => {
+  const id = req.params.id
+  const incoming = req.body || {}
+  const hasVoice = Object.prototype.hasOwnProperty.call(incoming, 'voice')
+  const incomingVoiceRaw = typeof incoming.voice === 'string' ? incoming.voice.trim() : incoming.voice
+  if (USE_SUPABASE) {
+    const supabase = getSupabase()!
+    const { data: existing, error: fetchError } = await supabase.from('agents').select('*').eq('id', id).maybeSingle()
+    if (fetchError) return res.status(500).json({ error: fetchError.message })
+    if (!existing) return res.status(404).json({ error: 'not found' })
+    const mergedConfig = { ...(existing.config || {}), ...(incoming.config || {}) }
+    if ('voice' in mergedConfig) delete mergedConfig.voice
+    const nextVoice = hasVoice
+      ? (typeof incomingVoiceRaw === 'string' && incomingVoiceRaw.length > 0 ? incomingVoiceRaw : null)
+      : existing.voice ?? null
+    const updates = {
+      ...existing,
+      ...incoming,
+      voice: nextVoice ?? undefined,
+      config: mergedConfig,
+    } as Agent
+    if (nextVoice === null) {
+      updates.voice = undefined
+    }
+    const { data: updated, error: updateError } = await supabase.from('agents').update(updates).eq('id', id).select().maybeSingle()
+    if (updateError) return res.status(500).json({ error: updateError.message })
+    return res.json(normalizeAgent(updated))
+  }
+  const existing = agentStore[id]
+  if (!existing) return res.status(404).json({ error: 'not found' })
+  const mergedConfig = { ...(existing.config || {}), ...(incoming.config || {}) }
+  if ('voice' in mergedConfig) delete mergedConfig.voice
+  const nextVoice = hasVoice
+    ? (typeof incomingVoiceRaw === 'string' && incomingVoiceRaw.length > 0 ? incomingVoiceRaw : undefined)
+    : existing.voice
+  const updated: Agent = {
+    ...existing,
+    ...incoming,
+    voice: nextVoice,
+    config: mergedConfig,
+  }
+  agentStore[id] = updated
+  res.json(updated)
+})
+
+app.delete('/api/agents/:id', async (req, res) => {
+  const id = req.params.id
+  if (USE_SUPABASE) {
+    const supabase = getSupabase()!
+    const { error } = await supabase.from('agents').delete().eq('id', id)
+    if (error) return res.status(500).json({ error: error.message })
+    return res.json({ ok: true })
+  }
+  if (!agentStore[id]) return res.status(404).json({ error: 'not found' })
+  delete agentStore[id]
+  res.json({ ok: true })
+})
+
+app.post('/api/agents/:id/voice-call', async (req, res) => {
+  try {
+    const id = req.params.id
+    const agent = await findAgentById(id)
+    if (!agent) {
+      return res.status(404).json({ error: 'not_found', detail: 'Agent not found.' })
+    }
+    const body = req.body || {}
+    const metadata = mergeMetadata(body.metadata)
+    if (!metadata.workflow_source) {
+      metadata.workflow_source = 'agent_endpoint'
+    }
+
+    const result = await startRetellVoiceCall(agent, {
+      channel: body.channel,
+      toPhoneNumber: body.toPhoneNumber ?? body.to,
+      fromPhoneNumber: body.fromPhoneNumber ?? body.from,
+      metadata,
+      overrides: body,
+    })
+
+    return res.json(result)
+  } catch (error: any) {
+    if (error instanceof RetellCallError) {
+      return res.status(error.status).json({ error: error.code, detail: error.message })
+    }
+    const message = typeof error?.message === 'string' ? error.message : 'retell_error'
+    const status = message.includes('RETELL_API_KEY') ? 500 : 502
+    console.error('Retell voice call failed', error)
+    return res.status(status).json({ error: 'retell_error', detail: message })
+  }
+})
+
+app.post('/api/agents/preview', async (req, res) => {
+  try {
+    const body = req.body || {}
+    const channel = (body.channel || '').toLowerCase()
+    if (!['sms', 'whatsapp', 'email'].includes(channel)) {
+      return res.status(400).json({ error: 'channel must be sms, whatsapp, or email' })
+    }
+    const step = body.step || {}
+    const config = step.config || {}
+    if (!config.agentId) {
+      return res.status(400).json({ error: 'agentId is required to preview output' })
+    }
+    const enriched = await ensureAgentGeneratedContent({
+      flowId: body.flowId || 'preview-flow',
+      step,
+      channel: channel as AgentPreviewChannel,
+      config,
+    })
+    const payload: Record<string, any> = {
+      body: enriched.body || config.body || '',
+      agentLanguage: enriched.agentLanguage || config.agentLanguage || config.language,
+      agentModel: enriched.agentModel || config.agentModel,
+      agentProvider: enriched.agentProvider || config.agentProvider,
+    }
+    if (channel === 'email') {
+      payload.subject = enriched.subject || config.subject || ''
+    }
+    res.json(payload)
+  } catch (e: any) {
+    res.status(500).json({ error: e?.message || 'preview_failed' })
+  }
 })
 
 // Auth (simple mock, no real hashing)
@@ -503,16 +1028,59 @@ app.post('/api/flows/:id/run', requireAuth, async (req, res) => {
     try {
       if (s.type !== 'action') continue
       const cfg = (s as any).config || {}
+      if (s.service === 'voice' && s.action === 'Start Voice Call') {
+        const agentIdCandidate = pickFirstString(cfg.agentId, cfg.agent_id, cfg.agent)
+        if (!agentIdCandidate) {
+          executions.push({ stepId: s.id, type: 'retell.voice-call', status: 'error', error: 'agentId is required for voice call steps' })
+          continue
+        }
+        const agent = await findAgentById(agentIdCandidate)
+        if (!agent) {
+          executions.push({ stepId: s.id, type: 'retell.voice-call', status: 'error', error: `Agent ${agentIdCandidate} not found` })
+          continue
+        }
+        const metadata = mergeMetadata(cfg.metadata)
+        metadata.workflow_flow_id = req.params.id
+        metadata.workflow_step_id = s.id
+        metadata.workflow_source = metadata.workflow_source || 'workflow_run'
+        try {
+          const result = await startRetellVoiceCall(agent, {
+            channel: cfg.channel,
+            toPhoneNumber: cfg.toPhoneNumber,
+            fromPhoneNumber: cfg.fromPhoneNumber,
+            metadata,
+            overrides: cfg,
+          })
+          executions.push({ stepId: s.id, type: 'retell.voice-call', status: 'success', result })
+        } catch (err: any) {
+          if (err instanceof RetellCallError) {
+            executions.push({ stepId: s.id, type: 'retell.voice-call', status: 'error', error: { code: err.code, message: err.message } })
+          } else {
+            const message = typeof err?.message === 'string' ? err.message : 'retell_error'
+            const detail = err?.response?.data || err?.detail
+            executions.push({ stepId: s.id, type: 'retell.voice-call', status: 'error', error: { message, detail } })
+          }
+        }
+        continue
+      }
       // SMS via Twilio
       if (s.service === 'notification' && s.action === 'Send SMS') {
-        const providerConfigKey = cfg.providerConfigKey || process.env.NANGO_TWILIO_PROVIDER_CONFIG_KEY || process.env.TWILIO_PROVIDER_CONFIG_KEY
-        const connectionId = cfg.connectionId || process.env.NANGO_TWILIO_CONNECTION_ID || process.env.TWILIO_CONNECTION_ID
+        let enrichedCfg = cfg
+        try {
+          enrichedCfg = await ensureAgentGeneratedContent({ flowId: req.params.id, step: s, channel: 'sms', config: cfg })
+          ;(s as any).config = enrichedCfg
+        } catch (err: any) {
+          executions.push({ stepId: s.id, type: 'ai-agent.generate', status: 'error', error: err?.message || 'agent_generation_failed' })
+          continue
+        }
+        const providerConfigKey = enrichedCfg.providerConfigKey || process.env.NANGO_TWILIO_PROVIDER_CONFIG_KEY || process.env.TWILIO_PROVIDER_CONFIG_KEY
+        const connectionId = enrichedCfg.connectionId || process.env.NANGO_TWILIO_CONNECTION_ID || process.env.TWILIO_CONNECTION_ID
         const accountSid = process.env.TWILIO_ACCOUNT_SID
-        const from = cfg.sender || process.env.DEFAULT_SMS_SENDER || process.env.TWILIO_FROM_NUMBER
-        const to = cfg.receiver
-        const bodyTxt = cfg.body
+        const from = process.env.DEFAULT_SMS_SENDER || process.env.TWILIO_FROM_NUMBER || enrichedCfg.sender
+        const to = enrichedCfg.receiver
+        const bodyTxt = enrichedCfg.body
         if (!providerConfigKey || !connectionId || !from || !to || !bodyTxt) {
-          executions.push({ stepId: s.id, type: 'twilio.sms', status: 'skipped', error: 'missing providerConfigKey/connectionId/from/to/body' })
+          executions.push({ stepId: s.id, type: 'twilio.sms', status: 'skipped', error: 'missing providerConfigKey/connectionId/from/to/body', result: { providerConfigKey, connectionId, from, to, hasBody: Boolean(bodyTxt) } })
           continue
         }
         const result = await unifiedAction({
@@ -526,13 +1094,21 @@ app.post('/api/flows/:id/run', requireAuth, async (req, res) => {
       }
       // WhatsApp text via Cloud API
       if (s.service === 'messaging' && s.action === 'Send Message') {
-        const providerConfigKey = cfg.providerConfigKey || process.env.NANGO_WHATSAPP_PROVIDER_CONFIG_KEY || process.env.WHATSAPP_PROVIDER_CONFIG_KEY
-        const connectionId = cfg.connectionId || process.env.NANGO_WHATSAPP_CONNECTION_ID || process.env.WHATSAPP_CONNECTION_ID
-        const phoneNumberId = cfg.sender || process.env.WHATSAPP_PHONE_NUMBER_ID || process.env.DEFAULT_WHATSAPP_SENDER
-        const to = cfg.receiver
-        const bodyTxt = cfg.body
+        let enrichedCfg = cfg
+        try {
+          enrichedCfg = await ensureAgentGeneratedContent({ flowId: req.params.id, step: s, channel: 'whatsapp', config: cfg })
+          ;(s as any).config = enrichedCfg
+        } catch (err: any) {
+          executions.push({ stepId: s.id, type: 'ai-agent.generate', status: 'error', error: err?.message || 'agent_generation_failed' })
+          continue
+        }
+        const providerConfigKey = enrichedCfg.providerConfigKey || process.env.NANGO_WHATSAPP_PROVIDER_CONFIG_KEY || process.env.WHATSAPP_PROVIDER_CONFIG_KEY
+        const connectionId = enrichedCfg.connectionId || process.env.NANGO_WHATSAPP_CONNECTION_ID || process.env.WHATSAPP_CONNECTION_ID
+        const phoneNumberId = process.env.WHATSAPP_PHONE_NUMBER_ID || process.env.DEFAULT_WHATSAPP_SENDER || enrichedCfg.sender
+        const to = enrichedCfg.receiver
+        const bodyTxt = enrichedCfg.body
         if (!providerConfigKey || !connectionId || !phoneNumberId || !to || !bodyTxt) {
-          executions.push({ stepId: s.id, type: 'whatsapp.message', status: 'skipped', error: 'missing providerConfigKey/connectionId/phoneNumberId/to/body' })
+          executions.push({ stepId: s.id, type: 'whatsapp.message', status: 'skipped', error: 'missing providerConfigKey/connectionId/phoneNumberId/to/body', result: { providerConfigKey, connectionId, phoneNumberId, to, hasBody: Boolean(bodyTxt) } })
           continue
         }
         const result = await unifiedAction({
@@ -546,14 +1122,23 @@ app.post('/api/flows/:id/run', requireAuth, async (req, res) => {
       }
       // Email via Nango (SendGrid or Outlook) using unifiedAction
       if (s.service === 'email' && (s.action === 'Send Email' || s.action === 'Send Template Email')) {
-        const providerConfigKey = (cfg.providerConfigKey) || process.env.NANGO_EMAIL_PROVIDER_CONFIG_KEY
-        const connectionId = (cfg.connectionId) || process.env.NANGO_EMAIL_CONNECTION_ID
-        const to = cfg.receiver
-        const bodyTxt = cfg.body
-        const subject = cfg.subject || 'Notification'
-        const from = cfg.sender || process.env.DEFAULT_EMAIL_SENDER
+        let enrichedCfg = cfg
+        try {
+          enrichedCfg = await ensureAgentGeneratedContent({ flowId: req.params.id, step: s, channel: 'email', config: cfg })
+          ;(s as any).config = enrichedCfg
+        } catch (err: any) {
+          executions.push({ stepId: s.id, type: 'ai-agent.generate', status: 'error', error: err?.message || 'agent_generation_failed' })
+          continue
+        }
+        const providerConfigKey = enrichedCfg.providerConfigKey || process.env.NANGO_EMAIL_PROVIDER_CONFIG_KEY
+        const connectionId = enrichedCfg.connectionId || process.env.NANGO_EMAIL_CONNECTION_ID
+        const to = enrichedCfg.receiver
+        const bodyTxt = enrichedCfg.body
+        const subject = enrichedCfg.subject || 'Notification'
+        const from = process.env.DEFAULT_EMAIL_SENDER || enrichedCfg.sender
         if (!providerConfigKey || !connectionId || !to || !bodyTxt || (!from && String(providerConfigKey || '').toLowerCase().includes('sendgrid'))) {
-          executions.push({ stepId: s.id, type: 'email.message', status: 'skipped', error: 'missing providerConfigKey/connectionId/to/body' + (String(providerConfigKey || '').toLowerCase().includes('sendgrid') ? '/from' : '') })
+          const suffix = String(providerConfigKey || '').toLowerCase().includes('sendgrid') ? '/from' : ''
+          executions.push({ stepId: s.id, type: 'email.message', status: 'skipped', error: `missing providerConfigKey/connectionId/to/body${suffix}`, result: { providerConfigKey, connectionId, from, to, hasBody: Boolean(bodyTxt), subject } })
           continue
         }
         const result = await unifiedAction({
@@ -720,11 +1305,6 @@ app.get('/api/analytics/overview', async (_req, res) => {
 
 // Integrations & OAuth2
 // Unified integration action endpoint: routes actions to Nango or Panora based on request body
-import { unifiedAction } from './integrations/unified.js'
-import { NangoClient } from './integrations/nangoClient.js'
-import { runCompletion, streamCompletion } from './integrations/llm.js'
-import fs from 'fs'
-import path from 'path'
 app.post('/api/integrations/unified', requireAuth, async (req, res) => {
   try {
     const result = await unifiedAction(req.body)
@@ -765,6 +1345,211 @@ app.post('/api/webhooks/twilio', express.urlencoded({ extended: false }), (req, 
 // Could be enhanced to handle WhatsApp webhooks when configured.
 
 // Nango connections management API (server-side only; requires NANGO_SECRET_KEY)
+app.get('/api/nango/provider-catalog', requireAuth, async (_req, res) => {
+  try {
+    const client = new NangoClient()
+    let remoteList: any[] = []
+    try {
+      const raw = await client.listProviderConfigs()
+      if (Array.isArray(raw)) {
+        remoteList = raw
+      } else if (Array.isArray((raw as any)?.data)) {
+        remoteList = (raw as any).data
+      } else if (Array.isArray((raw as any)?.provider_configs)) {
+        remoteList = (raw as any).provider_configs
+      }
+    } catch (inner: any) {
+      if (process.env.NODE_ENV !== 'production') {
+        console.warn('[nango] provider catalog fetch failed', inner?.message || inner)
+      }
+    }
+    const catalog = composeProviderCatalog(remoteList)
+    if (!catalog.length) {
+      return res.json(DEFAULT_PROVIDER_CATALOG)
+    }
+    res.json(catalog)
+  } catch (e: any) {
+    res.json(DEFAULT_PROVIDER_CATALOG)
+  }
+})
+
+app.post('/api/nango/oauth/start', requireAuth, async (req, res) => {
+  try {
+    const { provider_config_key, connection_id, return_url, metadata, scopes, params, force_update, end_user } = req.body || {}
+    if (!provider_config_key) {
+      return res.status(400).json({ error: 'provider_config_key is required' })
+    }
+    const connectionId = typeof connection_id === 'string' && connection_id.trim().length ? connection_id.trim() : `conn_${Date.now()}`
+    const portalBase = process.env.NANGO_OAUTH_RETURN_URL || process.env.PUBLIC_PORTAL_URL || process.env.PORTAL_URL || `http://localhost:${process.env.PORTAL_PORT || '3000'}`
+    const resolvedReturn = typeof return_url === 'string' && return_url.trim().length ? return_url : `${portalBase.replace(/\/$/, '')}/dashboard/connections`
+
+    const client = new NangoClient()
+    let integrationExists: boolean | null = null
+    try {
+      const rawConfigs = await client.listProviderConfigs()
+      const configs = Array.isArray(rawConfigs)
+        ? rawConfigs
+        : Array.isArray((rawConfigs as any)?.data)
+          ? (rawConfigs as any).data
+          : Array.isArray((rawConfigs as any)?.provider_configs)
+            ? (rawConfigs as any).provider_configs
+            : []
+      integrationExists = configs.some((cfg: any) => {
+        const key = typeof cfg?.unique_key === 'string' && cfg.unique_key.trim().length
+          ? cfg.unique_key.trim()
+          : typeof cfg?.provider_config_key === 'string' && cfg.provider_config_key.trim().length
+            ? cfg.provider_config_key.trim()
+            : typeof cfg?.providerConfigKey === 'string' && cfg.providerConfigKey.trim().length
+              ? cfg.providerConfigKey.trim()
+              : undefined
+        return key === provider_config_key
+      })
+    } catch (integrationCheckError) {
+      integrationExists = null
+      if (process.env.NODE_ENV !== 'production') {
+        console.warn('[nango] failed to verify provider_config_key existence', integrationCheckError)
+      }
+    }
+    if (integrationExists === false) {
+      return res.status(400).json({
+        error: 'integration_not_found',
+        detail: `No Nango integration with key "${provider_config_key}" exists. Create it in Nango or adjust the provider_config_key before starting OAuth.`,
+      })
+    }
+
+    const authUser = (req as any).authUser || {}
+    const candidateAuthEmail = typeof authUser?.email === 'string' ? authUser.email.trim() : ''
+    const isLikelyEmail = (value?: string) => {
+      if (!value) return false
+      const trimmed = value.trim()
+      const atIndex = trimmed.indexOf('@')
+      if (atIndex <= 0 || atIndex === trimmed.length - 1) return false
+      const domain = trimmed.slice(atIndex + 1)
+      return domain.includes('.')
+    }
+
+    const resolvedEndUser: ConnectSessionEndUser = {
+      id: (end_user && typeof end_user === 'object' && typeof end_user.id === 'string' && end_user.id.trim())
+        ? end_user.id.trim()
+        : (typeof authUser?.id === 'string' && authUser.id.trim() ? authUser.id.trim() : `workflow-user-${Date.now()}`),
+    }
+
+    const providedEmail = end_user && typeof end_user === 'object' && typeof end_user.email === 'string' ? end_user.email.trim() : undefined
+    if (providedEmail && isLikelyEmail(providedEmail)) {
+      resolvedEndUser.email = providedEmail
+    } else if (isLikelyEmail(candidateAuthEmail)) {
+      resolvedEndUser.email = candidateAuthEmail
+    }
+
+    let providedName: string | undefined
+    if (end_user && typeof end_user === 'object') {
+      if (typeof end_user.name === 'string' && end_user.name.trim()) {
+        providedName = end_user.name.trim()
+      } else if (typeof (end_user as any).display_name === 'string' && (end_user as any).display_name.trim()) {
+        providedName = (end_user as any).display_name.trim()
+      }
+    }
+    if (providedName) {
+      resolvedEndUser.display_name = providedName
+    } else if (typeof authUser?.name === 'string' && authUser.name.trim()) {
+      resolvedEndUser.display_name = authUser.name.trim()
+    }
+    const tags: Record<string, string> = {}
+    const metadataSource = (end_user && typeof end_user === 'object' && end_user.metadata && typeof end_user.metadata === 'object') ? end_user.metadata : undefined
+    if (metadataSource) {
+      for (const [key, value] of Object.entries(metadataSource)) {
+        if (!key) continue
+        if (value === null || value === undefined) continue
+        try {
+          tags[key] = typeof value === 'string' ? value : JSON.stringify(value)
+        } catch {
+          tags[key] = String(value)
+        }
+      }
+    }
+    tags.connection_id = connectionId
+    if (Object.keys(tags).length) {
+      resolvedEndUser.tags = { ...(resolvedEndUser.tags || {}), ...tags }
+    }
+
+    const collectScopes = () => {
+      if (Array.isArray(scopes)) {
+        return scopes.map((s: any) => (typeof s === 'string' ? s.trim() : '')).filter(Boolean)
+      }
+      if (typeof scopes === 'string') {
+        return scopes.split(',').map((s) => s.trim()).filter(Boolean)
+      }
+      return []
+    }
+
+    const resolvedScopes = collectScopes()
+    const resolvedReturnUrl = resolvedReturn
+
+    let authorizationParams: Record<string, string> | undefined
+    if (params && typeof params === 'object') {
+      authorizationParams = {}
+      for (const [key, value] of Object.entries(params)) {
+        if (!key) continue
+        if (value === null || value === undefined) continue
+        authorizationParams[key] = typeof value === 'string' ? value : String(value)
+      }
+      if (Object.keys(authorizationParams).length === 0) {
+        authorizationParams = undefined
+      }
+    }
+
+    const integrationDefaults: Record<string, ConnectSessionIntegrationDefaults> = {}
+    const configDefaults: ConnectSessionIntegrationDefaults = {}
+    if (authorizationParams) {
+      configDefaults.authorization_params = authorizationParams
+    }
+    if (resolvedScopes.length) {
+      configDefaults.user_scopes = resolvedScopes.join(',')
+    }
+    if (Object.keys(configDefaults).length) {
+      integrationDefaults[provider_config_key] = configDefaults
+    }
+
+    const payload: CreateConnectSessionPayload = {
+      end_user: resolvedEndUser,
+      allowed_integrations: [provider_config_key],
+      ...(Object.keys(integrationDefaults).length ? { integrations_config_defaults: integrationDefaults } : {}),
+    }
+
+    const sessionResponse: any = await client.createConnectSession(payload)
+    const session = sessionResponse?.data || sessionResponse
+    const connectLink = session?.connect_link || session?.authorization_url || session?.url
+    const connectToken = session?.token || session?.connect_token
+    if (!connectLink) {
+      return res.status(502).json({ error: 'authorization_url_missing', detail: 'Nango did not return a connect link.' })
+    }
+    let authorizationUrl = connectLink
+    try {
+      const url = new URL(connectLink)
+      if (resolvedReturnUrl && !url.searchParams.has('return_to')) {
+        url.searchParams.set('return_to', resolvedReturnUrl)
+      }
+      authorizationUrl = url.toString()
+    } catch {}
+    res.json({
+      authorizationUrl,
+      connectionId: session?.connection_id || connectionId,
+      providerConfigKey: session?.provider_config_key || provider_config_key,
+      connectLink,
+      connectSessionToken: connectToken,
+      expiresAt: session?.expires_at || session?.expiresAt,
+      sessionId: session?.id,
+      raw: session,
+      returnUrl: resolvedReturnUrl,
+      requestedConnectionId: connectionId,
+    })
+  } catch (e: any) {
+    const status = e?.status || e?.response?.status || 500
+    const detail = e?.response?.data || e?.detail
+    res.status(status).json({ error: e?.message || 'failed_to_start_oauth', detail })
+  }
+})
+
 app.get('/api/nango/connections', requireAuth, async (_req, res) => {
   try {
     const client = new NangoClient()

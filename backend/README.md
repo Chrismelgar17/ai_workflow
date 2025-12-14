@@ -190,6 +190,10 @@ Environment variables:
 - `OPENAI_API_KEY` (required)
 - `OPENAI_DEFAULT_MODEL` (optional, e.g. `gpt-4o-mini`)
 - `OPENAI_SYSTEM_PROMPT` (optional)
+- `ANTHROPIC_API_KEY` (optional, future Claude support)
+- `GEMINI_API_KEY` (optional, future Gemini support)
+- `ANTHROPIC_DEFAULT_MODEL` / `ANTHROPIC_SYSTEM_PROMPT` (optional defaults)
+- `GEMINI_DEFAULT_MODEL` / `GEMINI_SYSTEM_PROMPT` (optional defaults)
 - `LLM_RATE_LIMIT_PER_MINUTE` (optional, default 60 per IP)
 - `LLM_CACHE_ENABLED` (optional, `true|false`) to enable in-memory cache for non-streaming completes
 - `LLM_BANNED_TERMS` (optional, comma-separated keywords to block in prompts)
@@ -198,3 +202,29 @@ Notes:
 - Requests are per-IP rate limited on `/api/llm/*` using an in-memory counter.
 - Basic moderation checks prompt for banned keywords and size.
 - Logs for both endpoints are appended to `backend/logs/llm.log` (create automatically). The log includes metadata (lengths, not raw secrets).
+
+## Retell Integration (Voice Agents)
+
+A lightweight Retell integration wrapper is available at `src/integrations/retell.ts`.
+
+Environment variables:
+
+```
+RETELL_API_KEY=<your_retell_api_key>
+RETELL_BASE_URL=https://api.retell.ai
+```
+
+Basic usage:
+
+```ts
+import { RetellService } from './src/integrations/retell'
+
+const retell = new RetellService({ apiKey: process.env.RETELL_API_KEY!, baseUrl: process.env.RETELL_BASE_URL })
+const agents = await retell.listAgents()
+const call = await retell.createPhoneCall({ agentId: agents[0].id, toPhoneNumber: '+15555550123' })
+```
+
+Notes:
+- This wrapper uses `fetch` and avoids additional SDK installs. You can swap to the official SDK later.
+- Endpoints (`/v1/agents`, `/v1/calls/phone`, `/v1/calls/web`) may vary; adjust per your Retell account documentation.
+- The backend exposes `POST /api/agents/:id/voice-call` which looks up the stored agent config, validates that `provider === "retell"`, and launches a phone or web call against the Retell API. Supply `channel`, `toPhoneNumber`, and optional `metadata` in the request body.

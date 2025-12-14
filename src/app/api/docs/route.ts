@@ -1,8 +1,13 @@
 import { NextResponse } from "next/server";
 
-export async function GET() {
+// Prevent static prerendering so we can construct runtime URL
+export const dynamic = 'force-dynamic';
+
+export async function GET(request: Request) {
+  // Prefer explicit backend base; fallback to same-origin openapi JSON
   const base = process.env.NEXT_PUBLIC_API_URL;
-  const target = base ? `${base}/api/docs` : "/api/openapi.json"; // fallback to JSON if base not set
-  // Use 307 to preserve method
-  return NextResponse.redirect(target, { status: 307 });
+  const targetAbsolute = base
+    ? new URL('/api/docs', base).toString()
+    : new URL('/api/openapi.json', request.url).toString();
+  return NextResponse.redirect(targetAbsolute, { status: 307 });
 }

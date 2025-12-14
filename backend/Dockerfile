@@ -26,8 +26,9 @@ FROM node:20-bookworm-slim AS prod
 WORKDIR /app
 ENV NODE_ENV=production
 COPY package.json package-lock.json ./
-# Install only production dependencies in final image
-RUN npm ci --omit=dev --no-audit \
+# Reuse build stage dependencies and prune to production-only to avoid network hiccups
+COPY --from=base /app/node_modules ./node_modules
+RUN npm prune --omit=dev --no-audit \
 	&& npm cache clean --force
 COPY --from=base /app/dist ./dist
 ENV PORT=5000

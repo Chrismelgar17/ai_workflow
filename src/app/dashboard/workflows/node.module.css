@@ -1,0 +1,92 @@
+/* Minimalist, elegant styles for workflow nodes
+   - Soft rounded corners, subtle shadow, neutral warm palette
+   - CSS variables are sourced from global `:root` in globals.css
+   - Keep rules small and composable; Tailwind utilities remain for layout where appropriate
+*/
+.nodeRoot {
+  background: var(--card);
+  color: var(--card-foreground);
+  border-radius: var(--radius-md);
+  box-shadow: 0 8px 20px rgba(17,17,17,0.06);
+  border: 1px solid rgba(22,24,27,0.06);
+  overflow: hidden;
+  backdrop-filter: blur(2px);
+}
+
+.header {
+  padding: 0.75rem 1rem;
+  height: 4.75rem;
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.iconBox {
+  width: 2.25rem;
+  height: 2.25rem;
+  border-radius: 0.75rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  background: rgba(245,245,244,0.6);
+}
+
+.content {
+  padding: 0.75rem 1rem 1rem 1rem;
+}
+
+.fieldInput {
+  background: rgba(245,245,244,0.6);
+  border: 1px solid rgba(22,24,27,0.06);
+  padding: 0.5rem;
+  border-radius: 0.6rem;
+  transition: box-shadow .15s ease, transform .12s ease;
+  font-size: 0.9rem;
+}
+
+.fieldInput:focus {
+  outline: none;
+  box-shadow: 0 0 0 6px rgba(28,25,23,0.04);
+  transform: translateY(-1px);
+}
+
+.textarea {
+  min-height: 3.25rem;
+  resize: none;
+  font-family: var(--font-mono);
+}
+
+.divider { height: 1px; background: var(--border); opacity: 0.7; margin: 0.5rem 0; }
+
+.smallText { font-size: 0.78rem; color: var(--muted-foreground); }
+
+.toggle {
+  background: transparent;
+  border-radius: 9999px;
+  width: 2.25rem;
+  height: 1.25rem;
+  border: 1px solid rgba(22,24,27,0.06);
+  position: relative;
+}
+
+.toggleThumb {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 14px;
+  height: 14px;
+  border-radius: 9999px;
+  background: var(--card);
+  box-shadow: 0 2px 6px rgba(17,17,17,0.06);
+  transition: transform .15s ease;
+}
+
+.toggleOn { background: var(--primary); border-color: rgba(28,25,23,0.06); }
+.toggleOn .toggleThumb { transform: translateX(18px); }
+
+@media (max-width: 768px) {
+  .nodeRoot { width: 100% !important; }
+  .header { height: 4.25rem; padding: 0.5rem; }
+  .content { padding: 0.5rem; }
+}
